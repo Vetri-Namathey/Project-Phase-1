@@ -1,0 +1,23 @@
+# Planning/report HTML files -- generated docs, not project source
+*.html
+
+# Ad-hoc visual sanity-check outputs
+check_*.png
+
+# Python
+__pycache__/
+*.pyc
+
+# Large, regeneratable data -- not committed to keep the repo small.
+# CARLA-generated anomalies come from generate_anomalies.py; Cityscapes/
+# Fishyscapes are external downloads (see config.py's path constants).
+data/images/
+data/masks/
+
+# Trained checkpoints and experiment tracking -- large binaries, regenerated
+# by train.py / logged fresh on every run
+checkpoints/
+mlruns/
+
+# Local zip archives created for RunPod upload (Step 03 of RunPod_Setup_Guide)
+*.zip
