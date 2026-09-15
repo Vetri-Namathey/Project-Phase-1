@@ -1,0 +1,20 @@
+# RunPod-specific requirements. Deliberately different from requirements.txt.
+#
+# 1. torch/torchvision/torchaudio are NOT listed here -- the RunPod PyTorch
+#    template already ships a build matched to the pod's CUDA driver.
+#    Reinstalling torch here risks pulling a mismatched CUDA build and
+#    breaking GPU access. Verify the template's torch with the check in
+#    the setup guide instead of touching it.
+#
+# 2. requirements.txt's version caps (numpy<1.25, scikit-learn<1.4, etc.)
+#    exist only because the local 3070 machine is stuck on Python 3.8.
+#    RunPod's templates run Python 3.10/3.11, which doesn't have that
+#    ceiling -- so this file uses current, unconstrained versions instead.
+
+transformers>=4.46.3
+mlflow>=2.16
+scikit-learn>=1.4
+numpy>=1.26
+pillow>=10.0
+opencv-python>=4.10
+scipy>=1.11
