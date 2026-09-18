@@ -31,7 +31,10 @@ CARLA_MASKS_DIR = "data/masks"
 
 CHECKPOINT_DIR = "checkpoints"
 CHECKPOINT_1HEAD = os.path.join(CHECKPOINT_DIR, "model_1head_best.pth")
-CHECKPOINT_3HEAD = os.path.join(CHECKPOINT_DIR, "model_3head_best.pth")
+# CHECKPOINT_3HEAD is defined further down, once USE_DEV_ENCODER and
+# USE_OOD_HEAD_LR_SPLIT are known -- its filename encodes both, so distinct
+# experiment configs (e.g. Checkpoint A vs Checkpoint B) no longer silently
+# overwrite each other's saved weights on disk.
 
 # ---------------------------------------------------------------------------
 # Model
@@ -40,7 +43,7 @@ CHECKPOINT_3HEAD = os.path.join(CHECKPOINT_DIR, "model_3head_best.pth")
 # mit-b5 for the RTX 5080 final training runs. Flip USE_DEV_ENCODER to switch.
 ENCODER_NAME_FULL = "nvidia/mit-b5"
 ENCODER_NAME_DEV = "nvidia/mit-b2"
-USE_DEV_ENCODER = True
+USE_DEV_ENCODER = False
 ENCODER_NAME = ENCODER_NAME_DEV if USE_DEV_ENCODER else ENCODER_NAME_FULL
 
 NUM_SEG_CLASSES = 19
@@ -80,7 +83,14 @@ OOD_HEAD_LEARNING_RATE = 1e-5
 # Checkpoint A alone doesn't clear the gate. Toggling this instead of
 # hand-editing train.py's optimizer between runs keeps the two checkpoints
 # from silently blurring into an unclean, unreportable ablation.
-USE_OOD_HEAD_LR_SPLIT = False
+USE_OOD_HEAD_LR_SPLIT = True
+
+# Filename encodes the backbone + LR-split config so distinct experiment
+# checkpoints (Checkpoint A, Checkpoint B, ...) live in separate files
+# instead of overwriting one shared model_3head_best.pth.
+_encoder_tag = "devb2" if USE_DEV_ENCODER else "b5"
+_lr_tag = "lrsplit" if USE_OOD_HEAD_LR_SPLIT else "flatlr"
+CHECKPOINT_3HEAD = os.path.join(CHECKPOINT_DIR, f"model_3head_{_encoder_tag}_{_lr_tag}_best.pth")
 
 # --- Section 12 -> Phase 2b staging: the 0.75 / 0.83 distinction ---------
 # 0.75 is NOT the final target. It is the pre-calibration gate confirming

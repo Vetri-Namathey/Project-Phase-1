@@ -11,7 +11,7 @@
 #    RunPod's templates run Python 3.10/3.11, which doesn't have that
 #    ceiling -- so this file uses current, unconstrained versions instead.
 
-transformers>=4.46.3
+transformers==4.46.3  # pinned: newer releases require torch>=2.5, but the pod template ships torch 2.4.1
 mlflow>=2.16
 scikit-learn>=1.4
 numpy>=1.26

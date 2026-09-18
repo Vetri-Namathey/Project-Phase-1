@@ -35,8 +35,20 @@ def list_fishyscapes_pairs():
     for label_path in label_paths:
         fname = os.path.basename(label_path)
         match = re.match(r"^\d+_(.+)_labels\.png$", fname)
+        if match is None:
+            raise FileNotFoundError(
+                f"Fishyscapes label file '{fname}' under {config.FISHYSCAPES_LABELS_DIR} doesn't match "
+                f"the expected '{{index}}_{{city}}_{{seq}}_{{frame}}_labels.png' naming -- this usually "
+                f"means a stray or partially-downloaded file. Check FISHYSCAPES_LABELS_DIR in config.py."
+            )
         key = match.group(1)
-        image_path = img_index[key]
-        pairs.append((image_path, label_path))
+        if key not in img_index:
+            raise FileNotFoundError(
+                f"No matching Fishyscapes image found for label '{fname}' (looked for "
+                f"key '{key}' under {config.FISHYSCAPES_IMAGES_ROOT}/{{train,test}}/*/). "
+                f"This usually means a partial dataset download or a missing city folder -- "
+                f"check FISHYSCAPES_IMAGES_ROOT in config.py."
+            )
+        pairs.append((img_index[key], label_path))
 
     return pairs

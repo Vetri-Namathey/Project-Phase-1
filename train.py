@@ -75,13 +75,42 @@ def main():
     assert verify_encoder_frozen(model), "encoder must be fully frozen (Section 02)"
     assert verify_heads_independent(model), "OOD heads must be independently initialised (Section 02)"
     print("pre-flight checks passed: encoder frozen, heads independent")
-
+    print(
+        f"encoder: {config.ENCODER_NAME} (USE_DEV_ENCODER={config.USE_DEV_ENCODER}), "
+        f"depths={model.encoder.config.depths}, "
+        f"encoder_params={sum(p.numel() for p in model.encoder.parameters())}"
+    )
     train_base = CityscapesDataset(split="train")
     train_dataset = CutMixAugmentedDataset(train_base, p=config.CUTMIX_PROB)
     train_loader = DataLoader(train_dataset, batch_size=config.BATCH_SIZE, shuffle=True, num_workers=0)
 
     fishy_pairs = list_fishyscapes_pairs()
     assert len(fishy_pairs) == 100, f"expected 100 Fishyscapes pairs, found {len(fishy_pairs)}"
+
+    # Actually enforce the "only overwritten if this run does better" guarantee
+    # (previously just a printed claim while best_auroc started at -1.0, which
+    # meant the very first epoch would always overwrite a better existing
+    # checkpoint). Score the existing checkpoint for real before training a
+    # fresh model over it.
+    existing_best_auroc = -1.0
+    if os.path.exists(config.CHECKPOINT_3HEAD):
+        try:
+            existing_model = TwinGuardModel(num_ood_heads=3, ood_seeds=config.OOD_HEAD_SEEDS_3HEAD).to(device)
+            existing_model.load_state_dict(
+                torch.load(config.CHECKPOINT_3HEAD, map_location=device, weights_only=True)
+            )
+            existing_best_auroc = evaluate(existing_model, fishy_pairs, device)["auroc"]
+            del existing_model
+            print(
+                f"existing checkpoint at {config.CHECKPOINT_3HEAD} scores AUROC {existing_best_auroc:.4f} -- "
+                f"this run will only overwrite it if it beats that."
+            )
+        except RuntimeError as e:
+            print(
+                f"WARNING: could not load existing checkpoint at {config.CHECKPOINT_3HEAD} to score it "
+                f"(likely an encoder-architecture mismatch with the current USE_DEV_ENCODER setting): {e}\n"
+                f"Proceeding as if no existing checkpoint -- this run WILL overwrite it."
+            )
 
     seg_criterion = build_seg_criterion().to(device)
     # USE_OOD_HEAD_LR_SPLIT gates whether the OOD heads get a separate, 10x
@@ -99,7 +128,7 @@ def main():
     mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
     mlflow.set_experiment(config.MLFLOW_EXPERIMENT_NAME)
 
-    best_auroc = -1.0
+    best_auroc = existing_best_auroc
 
     with mlflow.start_run(run_name="experiment_b_3head"):
         mlflow.log_params({
