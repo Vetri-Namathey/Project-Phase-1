@@ -1,5 +1,8 @@
-# Planning/report HTML files -- generated docs, not project source
-*.html
+# Planning/report HTML files -- generated docs, not project source.
+# Anchored to the repo ROOT on purpose: a bare "*.html" also swallowed
+# frontend/index.html, which is Vite's entry point -- without it a fresh
+# clone cannot run the demo frontend at all.
+/*.html
 
 # Ad-hoc visual sanity-check outputs
 check_*.png
@@ -13,18 +16,33 @@ __pycache__/
 # Fishyscapes are external downloads (see config.py's path constants).
 data/images/
 data/masks/
+# The 5 miscategorized/oversized CARLA props pulled out of the bank during
+# curation (see PLAN.md). Same kind of data as data/images|masks, so it is
+# ignored for the same reason -- kept on disk, not deleted, but not shipped.
+data/_excluded_objects/
+# COCO cutout bank (~190MB, 3000 objects) and the raw val2017 download
+# (~1GB) behind it. Both are rebuilt from scratch by
+# download_coco_anomalies.py, on the pod as well as locally.
+data/coco_objects/
+data/_coco_download/
 
 # Trained checkpoints and experiment tracking -- large binaries, regenerated
 # by train.py / logged fresh on every run
 checkpoints/
 mlruns/
 
-# Local zip archives created for RunPod upload (Step 03 of RunPod_Setup_Guide)
+# Local zip archives created for RunPod upload (make_upload.py, see RUNPOD_GUIDE.md)
 *.zip
 
 # Claude Code's project memory -- machine/session-specific working notes,
 # not project source. Keep it local, never push it.
 CLAUDE.md
+
+# Claude Code's local working state. .claude/worktrees/ in particular holds
+# full checked-out copies of this repo (agent worktrees), including config
+# files carrying this machine's absolute C:\Users\... dataset paths -- those
+# must never reach a collaborator.
+.claude/
 
 # Ad-hoc stdout/stderr redirects from one-off debugging commands -- not
 # meant to be kept around, let alone committed.

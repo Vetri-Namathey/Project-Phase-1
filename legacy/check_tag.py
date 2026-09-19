@@ -1,3 +1,11 @@
+"""One-off CARLA probe, kept for reference -- not part of the pipeline.
+
+Prints the `semantic_tags` CARLA assigns to the first few `static.prop.*`
+blueprints. Written while working out how to derive pixel-exact anomaly
+masks; that work now lives in `generate_anomalies.py`. Needs the `carla`
+package and a running CARLA server on localhost:2000.
+"""
+
 import carla
 import random
 import time

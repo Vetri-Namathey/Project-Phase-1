@@ -1,4 +1,12 @@
-"""Experiment A (Section 12, revised): real Fishyscapes evaluation.
+"""SUPERSEDED -- use `python experiment_a.py` instead.
+
+Pre-merge original, kept for reference only. It scores ALL 100 Fishyscapes
+images, i.e. it reports on the same images checkpoint selection reads, which
+is exactly what `config.FISHYSCAPES_VAL_FRACTION` was introduced to stop.
+`experiment_a.py` reports the TEST half only, so its numbers are the ones
+comparable with Experiment B's.
+
+Experiment A (Section 12, revised): real Fishyscapes evaluation.
 
 No training. Loads nvidia/segformer-b5-finetuned-cityscapes-1024-1024 and
 scores every Fishyscapes Lost & Found validation image with MSP
@@ -6,6 +14,8 @@ scores every Fishyscapes Lost & Found validation image with MSP
 valid (non-ignore) pixels across all 100 images and logs the run to MLflow.
 """
 
+import os
+import sys
 import time
 
 import mlflow
@@ -14,10 +24,16 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-import config
-from data.fishyscapes_dataset import list_fishyscapes_pairs
-from experiment_a_baseline import load_baseline, msp_ood_score
-from metrics import compute_auroc, compute_ece, compute_fpr_at_tpr
+# This file lives in legacy/, the modules it imports live at the repo root.
+# Running a script directly puts the SCRIPT's directory on sys.path, not the
+# working directory, so the root has to be added explicitly for
+# `python legacy/experiment_a_eval.py` to resolve `import config`.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import config  # noqa: E402
+from data.fishyscapes_dataset import list_fishyscapes_pairs  # noqa: E402
+from experiment_a_baseline import load_baseline, msp_ood_score  # noqa: E402
+from metrics import compute_auroc, compute_ece, compute_fpr_at_tpr  # noqa: E402
 
 
 def score_image(image_path, processor, model, device):

@@ -30,18 +30,61 @@ pip install -r requirements.txt          # local (Python 3.8-constrained version
 pip install -r requirements-runpod.txt   # cloud (RunPod, modern Python, skips torch reinstall)
 ```
 
-Dataset paths are hardcoded in `config.py` (`CITYSCAPES_IMAGES_ROOT`, `CITYSCAPES_LABELS_ROOT`, `FISHYSCAPES_LABELS_DIR`, `FISHYSCAPES_IMAGES_ROOT`) — update these four lines to wherever Cityscapes and Fishyscapes Lost&Found actually live on your machine. CARLA-generated anomaly data lives at `data/images/` and `data/masks/`, produced by `generate_anomalies.py` (requires a running CARLA server).
+Dataset paths default to `config.py`'s `_DEFAULT_DATA_ROOT` (one unified root) but each of
+the four can be overridden individually by its own env var — `CITYSCAPES_IMAGES_ROOT`,
+`CITYSCAPES_LABELS_ROOT`, `FISHYSCAPES_LABELS_DIR`, `FISHYSCAPES_IMAGES_ROOT` — for a machine
+where the data doesn't live under one shared folder (see `config.py`'s comment block at the
+top for the exact mechanism). Run `python preflight.py` after setting these — it fails fast
+with a clear message if a path is wrong, rather than an obscure `FileNotFoundError` mid-epoch.
+
+Anomaly (outlier-exposure) objects for CutMix come from two sources behind one interface
+(`data/anomaly_sources.py`), selected via `config.ANOMALY_SOURCE = "carla" | "coco" | "both"`:
+- **CARLA** — `data/images/` + `data/masks/`, produced by `generate_anomalies.py` (needs a
+  running CARLA server). 45 curated objects (5 miscategorized/oversized props excluded — see
+  `PLAN.md`'s curation log; excluded originals kept at `data/_excluded_objects/`, not deleted).
+- **COCO** — `data/coco_objects/`, produced by `python download_coco_anomalies.py` (one-time
+  ~1GB download of COCO val2017; every Cityscapes-overlapping category is excluded via
+  `config.COCO_EXCLUDED_CATEGORIES`, self-verified at the end of the script).
+- **`"both"`** pools the two curated banks into one, sampled uniformly per paste — the
+  current default, so the model doesn't lock onto either source's own low-level statistical
+  signature (CG-render tells vs. COCO-photo tells) as a shortcut.
 
 ## Running things
 
 ```
-python experiment_a_eval.py     # real Fishyscapes evaluation for the baseline
+python preflight.py             # 13-check pipeline sanity gate -- run before any GPU spend
+python experiment_a.py          # baseline: real Fishyscapes eval via Max Softmax Probability
 python train.py                 # train TwinGuard (Experiment B)
-python check_collapse.py        # mean/std diagnostic on the trained OOD heads
-python compare_results.py       # pull all MLflow runs, compare metrics
-python check_epoch_trend.py     # full per-epoch history for the latest run
-python check_cutmix_overlay.py  # visual sanity check of CutMix pasting
+python check_data.py            # CutMix composites + object-size stats for the active bank
+python check_data.py --object N # inspect one raw object from that bank
+python check_runs.py            # pull all MLflow runs, compare metrics
+python check_runs.py --trend    # per-epoch history for the latest run
+python check_collapse.py        # separation diagnostic on the trained OOD heads
+python validate_metrics.py      # self-check of metrics.py against reference values
+python make_upload.py           # package code (no data) into twinguard_code.zip for RunPod
 ```
+
+Everything above runs from the repo root. `generate_anomalies.py` (CARLA object
+rendering) and `download_coco_anomalies.py` (COCO bank) are the two data-producing
+scripts; `server.py` is the demo backend (see below).
+
+### `legacy/` — superseded, kept for reference
+
+`legacy/` holds the pre-merge versions of scripts that the audited pipeline replaced,
+plus three one-off CARLA semantic-tag probes. Nothing in the pipeline imports them and
+none of them are packaged by `make_upload.py`. Each file's docstring names its
+replacement:
+
+| legacy | use instead |
+|---|---|
+| `legacy/experiment_a_baseline.py`, `legacy/experiment_a_eval.py` | `experiment_a.py` |
+| `legacy/compare_results.py`, `legacy/check_epoch_trend.py` | `check_runs.py` (`--trend`) |
+| `legacy/check_overlay.py`, `legacy/check_cutmix_overlay.py` | `check_data.py` |
+| `legacy/check_tag*.py` | — one-off CARLA probes, superseded by `generate_anomalies.py` |
+
+`legacy/check_cutmix_overlay.py` no longer runs at all against the current data
+classes (it predates ImageNet normalisation) — that is why it is here rather than in
+the list above.
 
 ## Live demo (React frontend + FastAPI backend)
 
@@ -62,9 +105,38 @@ and restart it.
 
 ## Cloud training (RunPod)
 
-See `RunPod_Setup_Guide.html` for the full step-by-step — pod creation, SSH setup, uploading code+data, and running training on an A40 GPU. `requirements-runpod.txt` is the cloud-specific dependency list (deliberately doesn't reinstall torch, since the pod template ships a CUDA-matched build already).
+See `RUNPOD_GUIDE.md` for the current step-by-step (pod creation, SSH setup, `setup_env.sh`,
+`make_upload.py` for packaging code+data, `pod_survey.sh` for a pre-flight hardware check, and
+running training on an A40 GPU). The older `RunPod_Setup_Guide.html` still exists but predates
+these scripts. `requirements-runpod.txt` is the cloud-specific dependency list (deliberately
+doesn't reinstall torch, since the pod template ships a CUDA-matched build already).
+
+## Repository layout
+
+```
+config.py losses.py metrics.py train.py utils.py   core pipeline
+data/            datasets, CutMix, anomaly banks (images/, masks/, coco_objects/
+                 are generated and gitignored -- see "Setup")
+model/           SegFormer wrapper + OOD heads
+preflight.py validate_metrics.py check_*.py        diagnostics, run from repo root
+experiment_a.py train.py                           the two experiments
+setup_env.sh pod_survey.sh make_upload.py          RunPod tooling (RUNPOD_GUIDE.md)
+server.py static/ frontend/                        live demo (backend, assets, React app)
+generate_anomalies.py download_coco_anomalies.py   data producers
+legacy/          superseded scripts, see above
+```
+
+Scripts stay at the repo root rather than under a `scripts/` folder on purpose: every
+one of them does `import config` / `from data...`, and Python puts the *script's* own
+directory on `sys.path` (not the working directory), so a nested script only works with
+an explicit path bootstrap. `legacy/` carries that bootstrap because nothing there is
+run routinely; the scripts you actually run every day do not need it.
 
 ## Key planning documents
+
+These are HTML files at the repo root and are **gitignored** (generated planning/report
+docs, not source) — a fresh clone will not have them. Ask for them directly if you need
+them.
 
 - `TwinGuard_Workflow_For_ClaudeCode.html` — the original architecture/spec
 - `TwinGuard_Full_Plan_Updated (1).html` — current novelty positioning, checkpoint plan, and literature grounding

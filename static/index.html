@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TwinGuard Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#EEF0EC; --paper-raised:#E4E8E2; --ink:#1C2321; --ink-dim:#5B655F; --ink-faint:#8B948C;
+    --line:rgba(28,35,33,0.12); --line-strong:rgba(28,35,33,0.22);
+    --accent:#2B5C6B; --accent-soft:rgba(43,92,107,0.10);
+    --good:#3E7D53;
+  }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  body{ background:var(--paper); color:var(--ink); font-family:'IBM Plex Sans',sans-serif; font-size:15px; line-height:1.5; }
+  .wrap{ max-width:1400px; margin:0 auto; padding:0 24px 60px; }
+
+  header{ padding:28px 0 20px; border-bottom:1px solid var(--line); margin-bottom:24px; }
+  h1{ font-family:'Fraunces',serif; font-weight:600; font-size:26px; }
+  .sub{ color:var(--ink-dim); font-size:13.5px; margin-top:6px; max-width:640px; }
+  .mono{ font-family:'IBM Plex Mono',monospace; }
+
+  .selector{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:28px; }
+  .thumb-btn{
+    border:1px solid var(--line); background:var(--paper-raised); border-radius:8px; padding:6px;
+    cursor:pointer; width:140px; text-align:left;
+  }
+  .thumb-btn img{ width:100%; border-radius:4px; display:block; }
+  .thumb-btn .label{ font-family:'IBM Plex Mono',monospace; font-size:10px; color:var(--ink-dim); margin-top:6px; padding:0 2px; }
+  .thumb-btn.active{ border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft); }
+  .thumb-btn:hover{ border-color:var(--accent); }
+
+  .grid{ display:grid; grid-template-columns:repeat(4, 1fr); gap:16px; }
+  @media (max-width:1000px){ .grid{ grid-template-columns:repeat(2, 1fr); } }
+  .panel{ background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .panel img{ width:100%; display:block; background:#000; }
+  .panel .cap{ padding:9px 12px; font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-dim); border-top:1px solid var(--line); }
+  .panel.highlight .cap{ color:var(--accent); font-weight:600; }
+
+  .row-label{ font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:0.08em; text-transform:uppercase; color:var(--ink-faint); margin:22px 0 10px; }
+  .row-label:first-of-type{ margin-top:0; }
+
+  .loading{ color:var(--ink-dim); padding:40px 0; text-align:center; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <h1>TwinGuard — prototype demo</h1>
+    <p class="sub">Real inference from the trained checkpoint (best AUROC 0.619, Fishyscapes Lost&amp;Found) on real anomaly photos. Precomputed for a reliable click-through — see <span class="mono">server.py</span> for the actual model call. Head disagreement (bottom-right panel) is the uncertainty signal this project's novelty rests on.</p>
+  </header>
+
+  <div id="selector" class="selector"><div class="loading">Loading demo images...</div></div>
+
+  <div id="content"></div>
+</div>
+
+<script>
+let manifest = [];
+let activeId = null;
+
+async function load() {
+  const res = await fetch('/api/manifest');
+  manifest = await res.json();
+  renderSelector();
+  if (manifest.length > 0) selectImage(manifest[0].id);
+}
+
+function renderSelector() {
+  const el = document.getElementById('selector');
+  el.innerHTML = '';
+  manifest.forEach(item => {
+    const btn = document.createElement('div');
+    btn.className = 'thumb-btn' + (item.id === activeId ? ' active' : '');
+    btn.innerHTML = `<img src="${item.panels.raw}"><div class="label">${item.title}</div>`;
+    btn.onclick = () => selectImage(item.id);
+    el.appendChild(btn);
+  });
+}
+
+function selectImage(id) {
+  activeId = id;
+  renderSelector();
+  const item = manifest.find(m => m.id === id);
+  const p = item.panels;
+  document.getElementById('content').innerHTML = `
+    <div class="row-label">Input &amp; segmentation</div>
+    <div class="grid">
+      <div class="panel"><img src="${p.raw}"><div class="cap">Raw frame</div></div>
+      <div class="panel"><img src="${p.segmentation}"><div class="cap">Predicted segmentation</div></div>
+      <div class="panel"><img src="${p.fused}"><div class="cap">Fused OOD heatmap</div></div>
+      <div class="panel"><img src="${p.ground_truth}"><div class="cap">Ground truth anomaly (Fishyscapes)</div></div>
+    </div>
+    <div class="row-label">Per-head output &amp; disagreement (the uncertainty signal)</div>
+    <div class="grid">
+      <div class="panel"><img src="${p.head0}"><div class="cap">OOD head 0</div></div>
+      <div class="panel"><img src="${p.head1}"><div class="cap">OOD head 1</div></div>
+      <div class="panel"><img src="${p.head2}"><div class="cap">OOD head 2</div></div>
+      <div class="panel highlight"><img src="${p.disagreement}"><div class="cap">Head disagreement (std) — novelty signal</div></div>
+    </div>
+  `;
+}
+
+load();
+</script>
+
+</body>
+</html>

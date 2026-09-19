@@ -1,3 +1,13 @@
+"""SUPERSEDED -- use `python check_data.py --object N` instead.
+
+Pre-merge original, kept for reference only. It only knows the CARLA bank's
+filename convention; `check_data.py --object N` inspects whichever bank
+`config.ANOMALY_SOURCE` selects (CARLA, COCO or both).
+
+Reads `data/...` relative to the CURRENT directory, so run it from the repo
+root: `python legacy/check_overlay.py`.
+"""
+
 import numpy as np
 from PIL import Image
 

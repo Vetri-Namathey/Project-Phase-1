@@ -1,3 +1,12 @@
+"""One-off CARLA probe, kept for reference -- not part of the pipeline.
+
+The sweep version of `check_tag_diff.py`: spawns every `static.prop.*`
+blueprint in turn and reports which semantic tag each one lands under, by
+pixel-count difference against a baseline frame. Used to pick the props
+`generate_anomalies.py` spawns. Needs the `carla` package and a running
+CARLA server on localhost:2000.
+"""
+
 import carla
 import time
 import numpy as np

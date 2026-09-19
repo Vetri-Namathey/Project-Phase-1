@@ -1,13 +1,39 @@
-torch>=2.4.1
-transformers>=4.46.3
-mlflow>=2.16
-scikit-learn>=1.0,<1.4
-numpy>=1.21,<1.25
-pillow>=9.0,<11
-opencv-python>=4.5,<4.11
-scipy>=1.8,<1.11
+# Local requirements.
+#
+# The previous version pinned numpy<1.25 / scikit-learn<1.4 / scipy<1.11 for a
+# Python 3.8 machine. The current local environment is Python 3.12 and already
+# runs newer versions than those caps allowed, so the caps only produced
+# resolver conflicts. Removed.
+#
+# torchvision is deliberately absent: data/cityscapes_dataset.py used it for a
+# single to_tensor call, which numpy does directly.
+#
+# carla is deliberately absent: the client package is only needed to run
+# generate_anomalies.py against a live CARLA server, its wheels
+# do not cover modern Python, and installing it is not a prerequisite for
+# training. Install it separately in a dedicated env on the CARLA machine.
 
-# demo backend (server.py) + prototype visualization (demo_visualize.py)
-fastapi>=0.110
-uvicorn>=0.30
-matplotlib>=3.5
+torch>=2.4.1
+transformers>=4.46.3,<5    # Two independent version constraints bite here, and
+                           # both have misleading error messages:
+                           #
+                           # <5      transformers 5.x needs torch>=2.5 and SILENTLY
+                           #         disables its PyTorch backend on older torch, so
+                           #         you get "SegformerModel requires the PyTorch
+                           #         library but it was not found" -- pointing at the
+                           #         wrong library entirely.
+                           #
+                           # <4.51   ONLY needed if torch<2.6. transformers 4.51+
+                           #         refuses torch.load under CVE-2025-32434 and tells
+                           #         you to use safetensors -- but nvidia/segformer-*
+                           #         ships pytorch_model.bin ONLY, so there is nothing
+                           #         to switch to. If your torch is <2.6, either
+                           #         upgrade torch to >=2.6 (preferred) or add the
+                           #         <4.51 cap here.
+                           #
+                           # preflight.py checks both combinations and prints the fix.
+mlflow>=2.16
+scikit-learn>=1.4      # validate_metrics.py only -- metrics.py does not import it
+numpy>=1.26
+pillow>=10.0
+scipy>=1.11            # generate_anomalies.py (connected-component labelling)

@@ -1,3 +1,12 @@
+"""One-off CARLA probe, kept for reference -- not part of the pipeline.
+
+Captures a semantic-segmentation frame before and after spawning one prop,
+to confirm a spawned object actually shows up as its own tag in the
+semantic camera. That technique is what `generate_anomalies.py` now uses to
+build exact masks. Needs the `carla` package and a running CARLA server on
+localhost:2000.
+"""
+
 import carla
 import time
 import numpy as np

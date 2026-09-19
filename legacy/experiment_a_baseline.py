@@ -1,4 +1,12 @@
-"""Experiment A (Section 12, revised): off-the-shelf SegFormer-B5 baseline.
+"""SUPERSEDED -- use `python experiment_a.py --image PATH` instead.
+
+Pre-merge original, kept for reference only. `experiment_a.py` (from the
+audited exp_coco pipeline) does this single-image check AND the full
+evaluation, on the same val/test split and the same metric implementations
+Experiment B uses. Nothing imports this except its sibling
+`legacy/experiment_a_eval.py`.
+
+Experiment A (Section 12, revised): off-the-shelf SegFormer-B5 baseline.
 
 No training. Loads nvidia/segformer-b5-finetuned-cityscapes-1024-1024 exactly
 as published and derives a per-pixel OOD score from its existing 19-class
@@ -7,6 +15,7 @@ validation on a single image -- real evaluation (AUROC/ECE over Fishyscapes)
 comes later once that dataset is downloaded.
 """
 
+import os
 import sys
 import time
 
@@ -16,7 +25,13 @@ import torch.nn.functional as F
 from PIL import Image
 from transformers import AutoImageProcessor, SegformerForSemanticSegmentation
 
-import config
+# This file lives in legacy/, the modules it imports live at the repo root.
+# Running a script directly puts the SCRIPT's directory on sys.path, not the
+# working directory, so the root has to be added explicitly for
+# `python legacy/experiment_a_baseline.py` to resolve `import config`.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import config  # noqa: E402
 
 
 def load_baseline():

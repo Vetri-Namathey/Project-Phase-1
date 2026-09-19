@@ -3,23 +3,27 @@
 Working checklist. Tick items as they're actually done — "done" means the artifact in
 the right-hand column exists on disk, not just that code was written.
 
-## Branch context (2026-09-19) — read this first
+## Branch context — merged 2026-09-19, superseding the note below
 
 The audited pipeline (BCE-with-logits fix, drivable-surface placement, photometric
-harmonization, val/test split, AP/mIoU, `preflight.py`, `check_runs.py`) lives on
-**`origin/exp_coco`**, not `main`. `main` (this checkout) still has the older
-pipeline plus the React/FastAPI demo (`frontend/`, `server.py`); `exp_coco` has the
-audited training pipeline but **does not have the demo at all** (deleted relative to
-main — 59 files differ, `git diff main origin/exp_coco --stat`). These two branches
-have diverged hard and will need a deliberate merge, not a fast-forward, once training
-work on `exp_coco` is done. Don't assume `main`'s file contents when reasoning about
-training-pipeline behavior — check which branch first.
+harmonization, val/test split, AP/mIoU, `preflight.py`, `check_runs.py`) has been pulled
+onto `main` from `origin/exp_coco`, file-by-file, keeping `main`'s demo (`frontend/`,
+`server.py`) intact rather than losing it to a branch merge. `main` is now the single
+branch to work from — see `CLAUDE.md`'s "Git branches" section for exactly what moved,
+what was kept, and the one real breakage (raw-logit OOD output vs. the demo's [0,1]
+rendering assumption) that was found and fixed in `server.py` during the merge.
+
+*(Original 2026-09-19 note, kept for history: "The audited pipeline lives on
+`origin/exp_coco`, not `main`... these two branches have diverged hard and will need a
+deliberate merge." — that merge has now happened.)*
 
 Confirmed already fixed on `exp_coco` (verified directly, not just claimed):
 - `data/anomaly_sources.py` — CARLA and COCO already live behind one clean interface,
-  gated by `config.ANOMALY_SOURCE = "carla" | "coco"`. COCO is the current default only
-  because "the CARLA machine is unavailable" (comment in `config.py`), not a permanent
-  choice.
+  gated by `config.ANOMALY_SOURCE`, which on `exp_coco` accepted `"carla" | "coco"` and
+  defaulted to `"coco"` only because no CARLA machine was available at the time. On
+  `main` it now also accepts `"both"`, which is the current default (see below); the
+  `config.py` comment was updated to match, so don't look for the old "temporary
+  stand-in" wording.
 - `CUTMIX_SCALE_MIN/MAX = 0.012 / 0.20` — the oversized-paste bug is already fixed here,
   matching real Fishyscapes anomaly-size statistics ("to within a pixel or two" per the
   code comment).
@@ -28,11 +32,19 @@ Confirmed already fixed on `exp_coco` (verified directly, not just claimed):
 
 ## Blocking — do before trusting any Experiment A vs B comparison
 
-- [ ] Re-run the baseline (`experiment_a.py` on `exp_coco`) for the test-half number
+- [ ] Re-run the baseline (`experiment_a.py`, now on `main`) for the test-half number
       → artifact: MLflow run + printed AUROC/ECE/FPR@95 logged against the **test**
         half. Experiment B's numbers are compared against this.
-- [ ] Run `preflight.py` clean, no warnings, immediately before the next paid RunPod run
-      → artifact: full preflight stdout log saved alongside that run's MLflow entry
+- [x] Run `preflight.py` clean immediately before the next paid RunPod run — done
+      2026-09-19, right after merging the audited pipeline + curating CARLA + adding
+      COCO. Result: **READY, with 1 warning** (no local CUDA device — expected, real
+      training runs on RunPod; not a pipeline defect). All 13 checks passed: dataset
+      paths, Cityscapes/Fishyscapes loaders, anomaly bank (3045 objects, `both` mode),
+      CutMix output stats matching real Fishyscapes distribution, model wiring (logits
+      emitted, encoder frozen correctly), one real training step, metrics sanity check.
+      → artifact: preflight stdout captured this session; re-run and save a copy
+        alongside the next real RunPod run's MLflow entry (this run wasn't logged to
+        MLflow, it's a local sanity check only).
 
 ## CARLA object bank — curation (from tonight's discussion)
 
@@ -55,18 +67,19 @@ Confirmed already fixed on `exp_coco` (verified directly, not just claimed):
       - Separate issue, not size/category: `#15` (and to a lesser extent `#12`) renders at
         very low contrast against the road despite a large mask — a paste that's barely
         visible is useless for training regardless of plausibility; worth a second look.
-- [ ] Curate the CARLA bank: **exclude indices 39, 40, 41, 14, 15** from the object bank
-      (the agent's direct recommendation — 5 excluded, 45 kept)
-      → artifact: an updated object manifest/filter list in `data/anomaly_sources.py`'s
-        CARLA bank construction, with the 5 exclusions and why (mirrors COCO's
-        `COCO_EXCLUDED_CATEGORIES` pattern already on `exp_coco`)
-- [ ] Add an `ANOMALY_SOURCE = "both"` mode to `data/anomaly_sources.py` — sample from
-      curated-CARLA and exclusion-filtered-COCO per paste (not one-or-the-other), aiming
-      for ~80 combined varieties. Reduces the risk of the model locking onto either
-      source's own low-level statistical signature (CG-render tells vs. COCO-photo tells)
-      as a shortcut, on top of just adding volume.
-      → artifact: a training run with `anomaly_source=both` logged to MLflow, AUROC/AP
-        compared against `carla`-only and `coco`-only runs
+- [x] Curate the CARLA bank: **exclude indices 39, 40, 41, 14, 15** from the object bank
+      — done 2026-09-19. Implemented by moving the 5 files (not a code filter list, since
+      `data/anomaly_sources.py`'s CARLA builder just globs the directory) from
+      `data/images/`+`data/masks/` into `data/_excluded_objects/` — reversible, not
+      deleted. 45 objects remain and were verified by `preflight.py`.
+- [x] Add an `ANOMALY_SOURCE = "both"` mode to `data/anomaly_sources.py` — done
+      2026-09-19: `_build_both_bank()` pools curated-CARLA (45) + exclusion-filtered-COCO
+      (3000, from a fresh `download_coco_anomalies.py` run) into one bank, sampled
+      uniformly per paste, 3045 objects total. Verified via `preflight.py`'s anomaly-bank
+      and cutmix-output checks (both passed).
+      → still needed: a **training run** with `anomaly_source=both` logged to MLflow,
+        AUROC/AP compared against `carla`-only and `coco`-only runs — the bank exists and
+        is validated, but hasn't been trained on yet.
 
 ## Experiments the audit fixes unlocked
 
@@ -127,8 +140,8 @@ Confirmed reasoning from tonight's discussion, worth keeping precise:
 - Real-time CARLA + WebSocket streaming demo itself (Section 08 / Slide 8) — explicitly
   sequenced to come **after** Phase 2b/calibration, not before. Don't start building this
   early, even though the *reasoning* for why it needs CARLA (above) is settled now.
-- Merging `main` and `exp_coco` — needs a deliberate plan (demo vs. training-pipeline
-  code have diverged too far for a fast-forward), not something to attempt casually.
+- ~~Merging `main` and `exp_coco`~~ — done 2026-09-19, see the "Branch context" note at
+  the top of this file and `CLAUDE.md`.
 
 ---
 *Update this file as items complete — check the box only once the artifact column is

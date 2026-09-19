@@ -170,8 +170,11 @@ def score_localization(image_path, label_path, model, device):
 
     with torch.no_grad():
         out = model(image_t)
+    # ood_head.py (exp_coco) now returns raw logits, not sigmoid probabilities
+    # (the BCE-with-logits fix) -- apply sigmoid here so the demo's [0,1]
+    # colormap/threshold code is unaffected by that training-side change.
     fused = F.interpolate(
-        out["ood_fused"].unsqueeze(1), size=(orig_h, orig_w), mode="bilinear", align_corners=False
+        torch.sigmoid(out["ood_fused"]).unsqueeze(1), size=(orig_h, orig_w), mode="bilinear", align_corners=False
     ).squeeze().cpu().numpy()
 
     valid = label_map != 255
@@ -236,11 +239,14 @@ def build_manifest():
             out = model(image_t)
 
             seg_class_map = out["seg_logits"].argmax(dim=1).squeeze(0).cpu().numpy()
+            # ood_head.py (exp_coco) now returns raw logits, not sigmoid
+            # probabilities -- sigmoid applied here, at the demo-display
+            # boundary, so it doesn't need to change training/eval code.
             fused = F.interpolate(
-                out["ood_fused"].unsqueeze(1), size=(orig_h, orig_w), mode="bilinear", align_corners=False
+                torch.sigmoid(out["ood_fused"]).unsqueeze(1), size=(orig_h, orig_w), mode="bilinear", align_corners=False
             ).squeeze().cpu().numpy()
             per_head = F.interpolate(
-                out["ood_scores"], size=(orig_h, orig_w), mode="bilinear", align_corners=False
+                torch.sigmoid(out["ood_scores"]), size=(orig_h, orig_w), mode="bilinear", align_corners=False
             ).squeeze(0).cpu().numpy()
             disagreement = per_head.std(axis=0)
             disagreement_norm = disagreement / (disagreement.max() + 1e-8)
