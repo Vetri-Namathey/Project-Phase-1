@@ -36,15 +36,30 @@ Confirmed already fixed on `exp_coco` (verified directly, not just claimed):
 
 ## CARLA object bank — curation (from tonight's discussion)
 
-- [ ] Audit all 50 local CARLA objects (`data/images/`, `data/masks/`) for oversized/
-      implausible props — `check_regen_039.png` is a confirmed real example: a CARLA
-      fountain/monument prop with a human-statue figure, mask covering ~70-80% of frame
-      width, planted mid-road. Not a plausible road anomaly by category *or* size.
-      → artifact: a script report, one row per object, mask-area-fraction-of-frame +
-        thumbnail, flag anything over ~15-20%
-- [ ] From that audit, hand-curate a road-plausible CARLA subset (drop monuments/décor/
-      oversized industrial props), same spirit as COCO's Cityscapes-category exclusion list
-      → artifact: a filtered object list/manifest, with the excluded ones and why
+- [x] Audit all 50 local CARLA objects (`data/images/`, `data/masks/`) for oversized/
+      implausible props — done 2026-09-19 by background agent, full 50-row table with
+      frame-area-fraction + visual judgment.
+      **Result: 5 of 50 objects are bad, 45 are fine.**
+      - `#39` (fountain/monument + human statue, 40.8% of frame) — wrong category AND oversized
+      - `#40` (full bus-stop shelter structure, 30.0% of frame) — wrong category AND oversized
+      - `#14`, `#15` (trampoline, ~8% of frame each) — wrong category AND oversized
+      - `#41` (smaller bus-shelter instance, 6.3%) — wrong category (street furniture),
+        size alone isn't extreme
+      - Everything ≤5.4% frame area (45 objects) reads as plausible road debris — pallets,
+        road flares, cones, bollards, wheelie bins, crates, warning signs — 20 of these
+        visually confirmed directly, the rest inferred from consistent size/aspect-ratio
+        with the confirmed set.
+      - Note: `#40`/`#41` and `#44`/`#45` and `#19`/`#20` etc. look like the same underlying
+        3D prop rendered at different distances — the 50 "objects" aren't all unique;
+        excluding `#39-41` removes both bad prop families in one pass.
+      - Separate issue, not size/category: `#15` (and to a lesser extent `#12`) renders at
+        very low contrast against the road despite a large mask — a paste that's barely
+        visible is useless for training regardless of plausibility; worth a second look.
+- [ ] Curate the CARLA bank: **exclude indices 39, 40, 41, 14, 15** from the object bank
+      (the agent's direct recommendation — 5 excluded, 45 kept)
+      → artifact: an updated object manifest/filter list in `data/anomaly_sources.py`'s
+        CARLA bank construction, with the 5 exclusions and why (mirrors COCO's
+        `COCO_EXCLUDED_CATEGORIES` pattern already on `exp_coco`)
 - [ ] Add an `ANOMALY_SOURCE = "both"` mode to `data/anomaly_sources.py` — sample from
       curated-CARLA and exclusion-filtered-COCO per paste (not one-or-the-other), aiming
       for ~80 combined varieties. Reduces the risk of the model locking onto either
