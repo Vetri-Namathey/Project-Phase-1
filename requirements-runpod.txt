@@ -1,20 +1,41 @@
-# RunPod-specific requirements. Deliberately different from requirements.txt.
+# Pod requirements. Deliberately different from requirements.txt.
 #
-# 1. torch/torchvision/torchaudio are NOT listed here -- the RunPod PyTorch
-#    template already ships a build matched to the pod's CUDA driver.
-#    Reinstalling torch here risks pulling a mismatched CUDA build and
-#    breaking GPU access. Verify the template's torch with the check in
-#    the setup guide instead of touching it.
+# 1. torch/torchvision/torchaudio are NOT listed. The pod template ships a
+#    build matched to its CUDA driver; reinstalling torch is the most common
+#    way to lose GPU access on RunPod. Verify the existing one instead:
+#        python -c "import torch; print(torch.__version__, torch.cuda.get_device_name(0))"
 #
-# 2. requirements.txt's version caps (numpy<1.25, scikit-learn<1.4, etc.)
-#    exist only because the local 3070 machine is stuck on Python 3.8.
-#    RunPod's templates run Python 3.10/3.11, which doesn't have that
-#    ceiling -- so this file uses current, unconstrained versions instead.
+# 2. Lower bounds are deliberately LOOSE. On a shared pod this file should
+#    add what is missing, not upgrade what is already there -- a pip upgrade
+#    hits the shared environment and can break someone else's next run. These
+#    floors are the real minimums the code needs, so an existing install
+#    almost always satisfies them and pip does nothing.
+#
+# 3. numpy in particular is capped below 2.0 on purpose. A torch built
+#    against numpy 1.x fails at import under numpy 2.x ("module compiled with
+#    NumPy 1.x cannot be run in NumPy 2.x"), and letting pip pull numpy 2
+#    alongside an inherited torch is a self-inflicted outage.
 
-transformers>=4.46.3
+transformers>=4.46.3,<5    # Two independent version constraints bite here, and
+                           # both have misleading error messages:
+                           #
+                           # <5      transformers 5.x needs torch>=2.5 and SILENTLY
+                           #         disables its PyTorch backend on older torch, so
+                           #         you get "SegformerModel requires the PyTorch
+                           #         library but it was not found" -- pointing at the
+                           #         wrong library entirely.
+                           #
+                           # <4.51   ONLY needed if torch<2.6. transformers 4.51+
+                           #         refuses torch.load under CVE-2025-32434 and tells
+                           #         you to use safetensors -- but nvidia/segformer-*
+                           #         ships pytorch_model.bin ONLY, so there is nothing
+                           #         to switch to. If your torch is <2.6, either
+                           #         upgrade torch to >=2.6 (preferred) or add the
+                           #         <4.51 cap here.
+                           #
+                           # preflight.py checks both combinations and prints the fix.
 mlflow>=2.16
-scikit-learn>=1.4
-numpy>=1.26
-pillow>=10.0
-opencv-python>=4.10
-scipy>=1.11
+scikit-learn>=1.0      # validate_metrics.py only -- metrics.py does not import it
+numpy>=1.21,<2.0
+pillow>=9.0
+scipy>=1.8

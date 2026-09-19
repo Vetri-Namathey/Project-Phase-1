@@ -1,5 +1,5 @@
-"""TwinGuard model (Section 02): frozen encoder + segmentation head + N
-independently-seeded OOD heads.
+"""TwinGuard model: frozen encoder + segmentation head + N independently
+seeded OOD heads.
 """
 
 import torch
@@ -12,7 +12,8 @@ from model.seg_head import SegmentationHead
 
 
 class TwinGuardModel(nn.Module):
-    def __init__(self, num_ood_heads=3, ood_seeds=None, num_seg_classes=config.NUM_SEG_CLASSES):
+    def __init__(self, num_ood_heads=3, ood_seeds=None,
+                 num_seg_classes=config.NUM_SEG_CLASSES):
         super().__init__()
         self.encoder = build_encoder()
         in_channels_list = self.encoder.config.hidden_sizes
@@ -20,7 +21,8 @@ class TwinGuardModel(nn.Module):
         self.seg_head = SegmentationHead(in_channels_list, num_seg_classes)
 
         if ood_seeds is None:
-            ood_seeds = config.OOD_HEAD_SEEDS_3HEAD if num_ood_heads == 3 else config.OOD_HEAD_SEEDS_1HEAD
+            ood_seeds = (config.OOD_HEAD_SEEDS_3HEAD if num_ood_heads == 3
+                         else config.OOD_HEAD_SEEDS_1HEAD)
         assert len(ood_seeds) == num_ood_heads, "seed list must match num_ood_heads"
 
         self.ood_heads = nn.ModuleList([
@@ -35,14 +37,27 @@ class TwinGuardModel(nn.Module):
         hidden_states = enc_out.hidden_states
 
         seg_logits = self.seg_head(hidden_states, output_size)
-        ood_scores = torch.stack(
-            [head(hidden_states, output_size) for head in self.ood_heads], dim=1
-        )  # (B, num_heads, H, W)
+
+        # (B, num_heads, H, W) logits -- the training signal.
+        ood_logits = torch.stack(
+            [head(hidden_states, output_size) for head in self.ood_heads], dim=1)
+        ood_scores = torch.sigmoid(ood_logits)
+
+        # Disagreement between independently-seeded heads is the project's
+        # epistemic uncertainty signal. Computed and returned here so it can
+        # actually be measured, rather than being an architectural claim with
+        # nothing reading it. std over heads; 0 for a single-head model.
+        if ood_scores.shape[1] > 1:
+            ood_disagreement = ood_scores.std(dim=1, unbiased=False)
+        else:
+            ood_disagreement = torch.zeros_like(ood_scores[:, 0])
 
         return {
             "seg_logits": seg_logits,
+            "ood_logits": ood_logits,
             "ood_scores": ood_scores,
             "ood_fused": ood_scores.mean(dim=1),
+            "ood_disagreement": ood_disagreement,
         }
 
     def trainable_parameters(self):
@@ -54,7 +69,8 @@ def verify_encoder_frozen(model):
 
 
 def verify_heads_independent(model):
-    flat = [torch.cat([p.detach().flatten() for p in head.parameters()]) for head in model.ood_heads]
+    flat = [torch.cat([p.detach().flatten() for p in head.parameters()])
+            for head in model.ood_heads]
     for i in range(len(flat)):
         for j in range(i + 1, len(flat)):
             if torch.equal(flat[i], flat[j]):

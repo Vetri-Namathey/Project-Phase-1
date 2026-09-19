@@ -1,23 +1,63 @@
-# Planning/report HTML files -- generated docs, not project source
-*.html
+# ---------------------------------------------------------------------------
+# Model weights -- NEVER commit these. A single checkpoint is ~327MB, which is
+# over GitHub's 100MB hard limit per file, and once a large blob is in history
+# it stays there even after deletion. Checkpoints are reproducible by running
+# train.py; results live in MLflow and in the README.
+# ---------------------------------------------------------------------------
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.safetensors
 
-# Ad-hoc visual sanity-check outputs
-check_*.png
+# Downloaded run artifacts and local archives of previous runs
+run*_archive/
+*_archive/
 
-# Python
-__pycache__/
-*.pyc
+# ---------------------------------------------------------------------------
+# Experiment tracking -- regenerated on every run
+# ---------------------------------------------------------------------------
+mlflow.db
+mlartifacts/
+mlruns/
+train.log
+*.log
 
-# Large, regeneratable data -- not committed to keep the repo small.
-# CARLA-generated anomalies come from generate_anomalies.py; Cityscapes/
-# Fishyscapes are external downloads (see config.py's path constants).
+# ---------------------------------------------------------------------------
+# Datasets and generated data -- large and reproducible.
+#   data/images, data/masks   <- generate_anomalies.py (needs a CARLA server)
+#   data/coco_objects         <- download_coco_anomalies.py
+#   Cityscapes / Fishyscapes  <- external downloads, see config.py paths
+# ---------------------------------------------------------------------------
 data/images/
 data/masks/
+data/coco_objects/
+data/_coco_download/
 
-# Trained checkpoints and experiment tracking -- large binaries, regenerated
-# by train.py / logged fresh on every run
-checkpoints/
-mlruns/
-
-# Local zip archives created for RunPod upload (Step 03 of RunPod_Setup_Guide)
+# ---------------------------------------------------------------------------
+# Generated outputs
+# ---------------------------------------------------------------------------
+check_*.png
 *.zip
+
+# Planning/report HTML -- generated docs, not project source
+*.html
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
