@@ -94,10 +94,39 @@ def _build_both_bank():
     sampled uniformly per paste (not source-then-object). Reduces the risk of
     the model locking onto either source's own low-level statistical
     signature (CG-render tells vs. COCO-photo tells) as a shortcut, on top of
-    just adding volume."""
+    just adding volume.
+
+    Rebalanced per config.CARLA_BANK_TARGET / config.COCO_BANK_TARGET
+    (PLAN.md, 2026-09-21): only 45 distinct CARLA objects exist, so reaching
+    CARLA_BANK_TARGET repeats those same 45 files rather than adding new
+    ones (no CARLA server here to render more) -- this shifts the CARLA:COCO
+    sampling ratio without adding CARLA visual diversity. COCO is a seeded
+    random subsample so the run is reproducible across machines.
+    """
     carla_bank = _build_carla_bank()
     coco_bank = _build_coco_bank()
-    return _ObjectBank(carla_bank.pairs + coco_bank.pairs, "both")
+
+    carla_target = getattr(config, "CARLA_BANK_TARGET", len(carla_bank.pairs))
+    coco_target = getattr(config, "COCO_BANK_TARGET", len(coco_bank.pairs))
+
+    carla_pairs = list(carla_bank.pairs)
+    if carla_target > len(carla_pairs):
+        reps = -(-carla_target // len(carla_pairs))  # ceil div
+        carla_pairs = (carla_pairs * reps)[:carla_target]
+    elif carla_target < len(carla_pairs):
+        carla_pairs = random.Random(config.GLOBAL_SEED).sample(carla_pairs, carla_target)
+
+    coco_pairs = list(coco_bank.pairs)
+    if coco_target < len(coco_pairs):
+        coco_pairs = random.Random(config.GLOBAL_SEED).sample(coco_pairs, coco_target)
+    elif coco_target > len(coco_pairs):
+        raise ValueError(
+            f"config.COCO_BANK_TARGET={coco_target} exceeds the {len(coco_pairs)} "
+            f"COCO objects on disk -- lower the target or re-run "
+            f"download_coco_anomalies.py for more."
+        )
+
+    return _ObjectBank(carla_pairs + coco_pairs, "both")
 
 
 _BUILDERS = {"carla": _build_carla_bank, "coco": _build_coco_bank, "both": _build_both_bank}

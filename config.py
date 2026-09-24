@@ -86,6 +86,18 @@ CHECKPOINT_3HEAD = os.path.join(CHECKPOINT_DIR, "model_3head_best.pth")
 # ambiguous about which data produced it.
 ANOMALY_SOURCE = "both"  # "carla" | "coco" | "both"
 
+# Rebalancing the "both" pool (2026-09-21, PLAN.md checkpoint). Only 45
+# distinct CARLA objects exist on disk -- there is no CARLA server on this
+# pod to render more -- so reaching CARLA_BANK_TARGET repeats those same 45
+# files (CutMix still applies its own random scale/position per paste, so
+# it isn't literally the same pixels every time, but it is the same 45
+# underlying objects, not new visual diversity). COCO_BANK_TARGET is a
+# random, seeded subsample of the full 3000-object COCO bank, so the pool
+# actually used for training is CARLA_BANK_TARGET + COCO_BANK_TARGET objects
+# ( default 500 + 1500 = 2000 ), not the full 45 + 3000 = 3045.
+CARLA_BANK_TARGET = 500
+COCO_BANK_TARGET = 1500
+
 # COCO categories that overlap Cityscapes' 19 known classes. These MUST be
 # excluded: pasting a COCO car and labelling it "anomaly" would directly
 # teach the model that cars are anomalous, and Fishyscapes AUROC would
