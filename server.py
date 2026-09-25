@@ -149,7 +149,7 @@ def draw_detection_box(raw_image, fused, out_size, percentile=97, min_area_frac=
         x, y, w, h = cv2.boundingRect(cnt)
         x0, y0 = int(x * scale_x), int(y * scale_y)
         x1, y1 = int((x + w) * scale_x), int((y + h) * scale_y)
-        cv2.rectangle(arr, (x0, y0), (x1, y1), (214, 64, 31), 3)  # frontend --accent
+        cv2.rectangle(arr, (x0, y0), (x1, y1), (61, 90, 254), 3)  # frontend --accent
         boxes_drawn += 1
 
     return Image.fromarray(arr).resize(out_size, Image.BILINEAR), boxes_drawn
@@ -339,7 +339,7 @@ def build_training_samples():
 
         mask = np.load(mask_path)
         overlay_arr = np.array(raw).copy()
-        highlight = np.array([214, 64, 31])  # frontend's --accent (#D6401F), index.css
+        highlight = np.array([61, 90, 254])  # frontend's --accent (#3D5AFE), index.css
         overlay_arr[mask == 1] = (0.4 * overlay_arr[mask == 1] + 0.6 * highlight).astype(np.uint8)
         Image.fromarray(overlay_arr).resize(out_size, Image.BILINEAR).save(os.path.join(out_dir, "overlay.png"))
 

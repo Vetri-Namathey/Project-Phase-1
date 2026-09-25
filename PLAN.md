@@ -3,7 +3,35 @@
 Working checklist. Tick items as they're actually done — "done" means the artifact in
 the right-hand column exists on disk, not just that code was written.
 
-## RESUME HERE (paused 2026-09-21, pod stopped)
+## RESUME HERE (paused 2026-09-26, no pod running)
+
+Boundary-only ECE + UBQ Steps 1-4 are done: `metrics.py` primitives, `validate_metrics.py`
+checks, `eval_spatial.py`, and CARLA plus Fishyscapes results. Everything ran locally on the
+RTX 3070 in the `cuda_test` conda env (`conda activate cuda_test` → `python ...`). The
+plain `python` on PATH has no numpy, so don't use it. Full numbers are under Step 4 in
+"Boundary-only ECE (Novelty 6) + UBQ" below.
+
+**Headline:** raw band-ECE (r=8) = 0.2273 vs whole-image 0.0004 (~570×). Temp scaling
+partly helps (0.1845). The current `L_calib` is significantly worse than temp and no better
+than raw. The pre-registered decision rule says Step 5 (band-masked `L_calib` fine-tune) is
+justified.
+
+Pick up tomorrow with one of these, in the recommended order:
+1. **Band-fitted temperature baseline** (design point 5, local, no training). Fit T on
+   val-half band pixels only, then re-run the Step 4 comparison. It is cheap, and it is the
+   stronger baseline Step 5 would have to beat anyway.
+2. **Decide on Step 5.** It needs a RunPod run about the length of the 2026-09-25 calib
+   runs. Design point 3 has the implementation notes (`max_pool2d` band on GPU in
+   `run_calib_finetune`; add `eval_spatial.py` to `make_upload.py` if it has to run on
+   the pod).
+3. **Put the Step 4 numbers into the frontend.** The calibration sections on the Home and
+   Training Runs pages currently show only the whole-image table.
+
+Also done this session: frontend home-page redesign (new indigo palette, live
+disagreement grid, calibration tabs) and the reliability diagram on the Training Runs page
+(`static/calibration_reliability.png`).
+
+## Earlier checkpoint (paused 2026-09-21, pod stopped) — superseded by the one above
 
 Just cleared the project's top blocking item: a real, verified, post-BCE-fix Experiment B
 number. See "Anomaly bank rebalancing — implemented 2026-09-21" below for the full result
@@ -380,6 +408,346 @@ it's done when the result is visible in `frontend/`, not just sitting in `mlflow
         explicitly labeled "target output — pending Model v3," not faked or approximated
         data. This is called out there as the single most reputationally expensive mistake
         available in the whole project.
+
+## Boundary-only ECE (Novelty 6) + UBQ — shared plan, eval-only first (2026-09-26, planning only, nothing built)
+
+Both `L_calib` runs (β=1, β=50) showed that whole-image ECE can't separate raw, temp-scaled
+and `L_calib`. At a 0.28% positive rate it mostly measures the easy true negatives. This
+section plans the two spatial metrics the calibration claim actually depends on. It also
+sets the order of work for a ~3-day deadline. Code state was checked before writing this.
+`grep -rn "UBQ\|Hausdorff\|boundary" *.py` finds only docstrings and comments
+(`calibrate.py:19,248`, `config.py:214,229`, `losses.py:8`) plus unrelated uses in
+`server.py`/`data/cutmix.py`. No band, distance or Hausdorff code exists anywhere.
+
+**Facts checked in the code (they drive the decisions below):**
+- **Output resolution.** `data/transforms.py`'s `load_image_tensor` resizes every input to
+  `config.INPUT_WIDTH×INPUT_HEIGHT` = 1024×512. SegFormer predicts at 1/4 of that, which is
+  256×128. `evaluate_fused`/`evaluate_ood` then upsample bilinearly to label size. Fishyscapes
+  labels are 2048×1024 and CARLA frames are 1024×1024, so one model output cell is 8 label
+  pixels tall on both. A band narrower than ~8 px would measure bilinear interpolation, not
+  the model.
+- **Real anomaly sizes.** From `config.py`'s CutMix comment (all 188 Fishyscapes L&F
+  objects), the longest side as a fraction of the 1024 px short side is:
+  min 0.007 | p25 0.022 | median 0.043 | p75 0.072. That is ≈7 / 22 / 44 / 74 px.
+  At p25 an object is under 3 output cells long, so for small objects most pixels sit near
+  an edge anyway.
+- **CARLA masks are full scenes, not crops.** `generate_anomalies.py` saves the full
+  1024×1024 RGB frame (`data/images/anomaly_NNN.png`) and a full-frame binary mask
+  (`data/masks/anomaly_mask_NNN.npy`). The mask is the largest connected changed-tag blob
+  from `extract_new_object_mask`, with `MIN_COMPONENT_PIXELS=50`. There are 45 curated
+  frames and no 255/void pixels. So the model can run directly on these frames against
+  pixel-exact ground truth, with no CutMix involved.
+- **Checkpoint path gotcha, found while planning.** The real 0.9920 checkpoint and the kept
+  β=1 `L_calib` checkpoint sit at the **repo root** (`./model_3head_best.pth`,
+  `./model_3head_calib_best.pth`). `config.CHECKPOINT_3HEAD` points to
+  `checkpoints/model_3head_best.pth`, which on this machine is the **stale Sep-17 file**
+  (the Checkpoint-B duplicate described in `CLAUDE.md`). Any eval here must pass explicit
+  paths. Also, **do not re-run `python calibrate.py`** to get these numbers. Its `main()`
+  always runs `run_calib_finetune` again, which overwrites `config.CHECKPOINT_3HEAD_CALIB`.
+  Temperature can be passed as the logged value **T=1.7142** (`calibrate.log`) instead of
+  being re-fit.
+
+**Design decisions (proposed, not yet built):**
+
+1. **What "boundary region" means.** The band is every valid pixel whose Euclidean distance
+   to the ground-truth anomaly edge is at most `r`. It is symmetric, with an inner half (just
+   inside the object) and an outer half (just outside). Proposed default:
+   **`r = 8` px in label pixels**, i.e. one model output cell on both datasets (see above).
+   - The reason for 8: anything narrower is below the model's native resolution.
+     Anything much wider stops being "boundary" for typical objects. At r=8 a median object
+     (44 px) keeps a ~28 px interior core outside the band. A p25 object (22 px) keeps
+     almost none, which honestly reflects that small objects are nearly all edge.
+   - Also report **r ∈ {4, 16}** as a sensitivity check, so the conclusion can't rest on one
+     hand-picked width. This costs nothing extra: the same forward pass fills several
+     histograms.
+   - Void pixels (label 255, Fishyscapes only) are removed from the band after it is
+     computed, exactly as `valid = label_map != 255` already does in `evaluate_fused`.
+2. **How band-ECE is computed.** Reuse `metrics.py`'s `ScoreHistogram` unchanged. Band-ECE is
+   just a second `ScoreHistogram` whose `.update()` receives only `scores[band]` and
+   `labels[band]`. `ece()`, `reliability_curve()` and `summary()` then work on that
+   histogram with no changes. Band AUROC, AP and FPR@95 come out of `summary()` too. They
+   are secondary and should be read as "edge discrimination", not headline numbers.
+   - **Where it goes.** Leave `train.py`'s `evaluate_ood` untouched. It drives checkpoint
+     selection and should not change three days out. Leave `calibrate.py`'s
+     `evaluate_fused` untouched as well: its return type is used by `fit`/`finetune`/
+     `comparison_table`/`--temp-only`. Add **one new eval-only script,
+     `eval_spatial.py`**. It takes explicit `--raw`, `--calib` and `--temperature`
+     arguments and `--dataset carla|fishyscapes`, copies `evaluate_fused`'s per-image
+     loop, and fills a whole-image histogram, one band histogram per `r`, and per-image
+     UBQ values. It never trains and never writes a checkpoint. If it runs on the pod, add
+     it to `make_upload.py`'s file list.
+   - Also print the band's pixel count and positive rate for each `r`. This is the on-disk
+     proof that band-ECE is no longer dominated by negatives. If the band positive rate
+     comes out far from the tens of percent expected, stop and check before reading ECE.
+3. **Loss or eval-only? Recommendation: eval-only first, and probably eval-only for this
+   deadline.** Eval-only means 3 models × 50 test images of forward passes, with no
+   training and no pod-hour risk. It answers the question that decides everything else:
+   *does the existing β=1 `L_calib` checkpoint differ from temp scaling in the band, even
+   though whole-image ECE showed no difference?*
+   - Build a band-masked `SoftECELoss` variant only if the eval passes a rule fixed
+     **before** the numbers are seen:
+     - raw's band-ECE is clearly worse than its whole-image ECE (so there is band
+       miscalibration to fix), **and**
+     - neither temp scaling nor current `L_calib` closes that gap. "Closes the gap" is
+       judged with a paired bootstrap over the 50 test images; see the checklist.
+   - If both conditions hold, the code change is small. In `run_calib_finetune`, apply
+     `soft_ece` only to band pixels of `ood_target`. Compute that band on the GPU with
+     `max_pool2d`-based dilation/erosion, since `scipy` EDT can't run per batch.
+     - Caveat: the square kernel only approximates the Euclidean band. The approximation
+       and the resolution at which `ood_target` meets `ood_fused` in `compute_total_loss`
+       must be checked and written down.
+     - Cost: one more pod run the length of the 2026-09-25 runs.
+   - Honest prior: β=1 `L_calib` was selected at epoch 1 and moved almost nothing
+     whole-image, so "no band difference either" is a likely outcome. Plan for it (see the
+     viva framing below). Don't treat it as a surprise.
+4. **Shared infrastructure with UBQ.** One geometric primitive serves both metrics. It goes
+   in `metrics.py` as plain functions, next to the other eval primitives, rather than a new
+   module (per `CLAUDE.md`'s "no new abstractions" convention). `scipy` is already in both
+   requirements files.
+   - `gt_signed_distance(anomaly_mask) -> float32 (H,W)`: Euclidean distance in pixels to
+     the ground-truth anomaly edge, negative inside and positive outside. Built from two
+     `scipy.ndimage.distance_transform_edt` calls, on the mask and on its complement.
+     Returns all-NaN if the mask is empty; the callers skip that image and count it.
+   - `boundary_band(anomaly_mask, radius_px, valid=None) -> bool (H,W)`:
+     `abs(signed_distance) <= radius_px`, ANDed with `valid`. Optional
+     `side="both"|"inner"|"outer"`.
+   - `ubq(pred_mask, anomaly_mask, valid=None) -> dict`:
+     - `pred_to_gt_px` is the directed Hausdorff from predicted-region pixels to the
+       ground-truth extent. It measures looseness: how far the predicted blob spills out.
+     - `gt_to_pred_px` is the reverse and measures missed extent.
+     - Also return `pred_to_gt_p95`, a 95th percentile instead of the max, because a
+       max-based distance is decided by a single stray false-positive pixel anywhere in
+       the frame.
+     - All values come from EDT lookups. `scipy.spatial.distance.directed_hausdorff`, named
+       in the UBQ section below, becomes the **reference implementation the unit check
+       compares against**, not the production path. This is a deliberate change to that
+       section's wording, recorded here.
+     - Returns NaN if `pred_mask` is empty.
+   - `ScoreHistogram.threshold_at_tpr(target_tpr)` is a new method. It returns the score
+     value where `fpr_at_tpr` already finds its cutoff. UBQ needs a binary predicted
+     region, and that threshold choice must be fixed and stated, not tuned on test.
+     Proposal: for each model, the fused-score threshold that reaches TPR=0.95 on the
+     **Fishyscapes val half**, then applied unchanged to test and to CARLA.
+   - Known consequence, stated now: at a TPR-matched threshold, UBQ is almost unchanged by
+     temperature scaling. A per-head scalar T before the mean is not exactly monotonic, but
+     close. So UBQ effectively compares `L_calib` against raw. It **cannot** be used to show
+     "L_calib beats temp scaling"; only band-ECE can speak to that.
+   - UBQ is computed on `ood_fused`, the map `SoftECELoss` actually trains. Doing it on
+     `ood_disagreement` is nice-to-have only.
+5. **Correction to this file's own earlier framing.** The L_calib gate section above says a
+   scalar T "structurally can't compete" on boundary ECE. That is too strong. One global T
+   *does* change band-ECE, because the band is just a subset of pixels. What it can't do is
+   calibrate the band and the interior differently. So a T fitted on whole-image pixels
+   could still win on band-ECE, and a fair comparison has to allow that outcome. A cheap,
+   stronger baseline is `fit_temperature` restricted to val-half band pixels. It is listed
+   as nice-to-have below. If `L_calib` beats whole-image T but not band-fitted T, the
+   spatial claim is weaker than hoped, and it should be reported that way.
+
+**Checklist — ordered. CARLA comes before Fishyscapes, per the UBQ section's existing decision:**
+
+- [x] **Step 1 — shared primitive + known-answer unit checks (no model, no GPU). Done 2026-09-26,
+      run locally (no RunPod needed -- this step is pure numpy/scipy, no GPU/model).** Added
+      `gt_signed_distance`, `boundary_band`, `ubq` and `ScoreHistogram.threshold_at_tpr` to
+      `metrics.py`, plus a new "Boundary band + UBQ primitives" section in
+      `validate_metrics.py` (imports `scipy.spatial.distance.directed_hausdorff` as the
+      reference implementation only, per the design note above). Run against the
+      `anaconda3/envs/cuda_test` interpreter (numpy 1.24.4, scipy 1.10.1 -- the plain
+      `python` on PATH resolves to a different, broken Python 3.12 install with no numpy;
+      unrelated to this project, not touched):
+      ```
+      Boundary band + UBQ primitives
+        OK  band area (outer, r=8)  ours=3364  analytic=3401.1  rel_err=0.0109
+        OK  ubq(gt, gt)  {'pred_to_gt_px': 0.0, 'gt_to_pred_px': 0.0, 'pred_to_gt_p95': 0.0}
+        OK  ubq vs directed_hausdorff (trial 0)  pred_to_gt d=0.000  gt_to_pred d=0.000
+        OK  ubq vs directed_hausdorff (trial 1)  pred_to_gt d=0.000  gt_to_pred d=0.000
+        OK  ubq vs directed_hausdorff (trial 2)  pred_to_gt d=0.000  gt_to_pred d=0.000
+        OK  ubq vs directed_hausdorff (trial 3)  pred_to_gt d=0.000  gt_to_pred d=0.000
+        OK  ubq vs directed_hausdorff (trial 4)  pred_to_gt d=0.000  gt_to_pred d=0.000
+        OK  threshold_at_tpr  thresh=0.37599  reproduced_tpr=0.9501  fpr_at_tpr=0.35091  reproduced_fpr=0.35091  d=0.00e+00
+
+      ALL METRICS MATCH SKLEARN
+      ```
+      All 4 sklearn-comparison cases from before this change still pass unchanged (not
+      reprinted here, see full stdout) -- the new section is additive, nothing in the
+      existing `ScoreHistogram` path was touched.
+- [x] **Step 2 — CARLA known-answer check on real object shapes (still no model). Done
+      2026-09-26, local, no RunPod.** All 45 `data/masks/*.npy`:
+      ```
+      ubq(gt, gt) == 0 for 45/45 masks (OK)
+
+      dilation recovery (pred_to_gt_px should land near k, +/-1px from discretization):
+         k     mean      max   n_ok(+/-1px)
+         2    0.000    0.000         45/45
+         5    0.000    0.000         45/45
+        10    0.000    0.000         45/45
+
+      band positive rate at r=8 (each of 45 masks):
+        mean=0.0092  min=0.0005  max=0.0334  out_of_(0,1)=0/45  (OK)
+      ```
+      Dilation recovery landed at exactly `k` (not just within tolerance) for every mask at
+      every `k` -- these are real curated object silhouettes with long enough straight runs
+      that the perpendicular-direction distance dominates the max, so the diamond-shaped
+      corner effect of `scipy.ndimage.binary_dilation`'s default structuring element never
+      became the binding case here. Band positive rate is strictly inside (0, 1) for every
+      mask, so the payoff this step exists to check -- band-ECE having a genuine positive
+      class to work with -- holds on real object shapes. Script was a one-off
+      (`step2_carla_ubq_check.py` in scratch, not added to the repo); `eval_spatial.py` in
+      Step 3 is the permanent artifact.
+- [x] **Step 3 — first model numbers on CARLA frames. Done 2026-09-26, run locally by the
+      user** (`cuda_test` env, RTX 3070 laptop; eval-only, no RunPod needed). `eval_spatial.py`
+      written, run on all 45 frames for raw, temp (T=1.7142) and `L_calib`:
+      ```
+      model        whole-ECE  band-ECE r=4  r=8     r=16    whole-AUROC  band-AUROC r=8
+      raw          0.0117     0.3301        0.2985  0.2588  0.9250       0.5933
+      temp-scaled  0.0102     0.2727        0.2442  0.2094  0.9309       0.5933
+      L_calib      0.0136     0.3200        0.2898  0.2537  0.9259       0.6056
+      band pos_rate: r=4 0.4877 | r=8 0.4538 | r=16 0.3989  (n_px 230045 / 432971 / 798234)
+      UBQ (all 3): threshold_at_tpr(0.95) ~1e-5..1e-3, pred_to_gt_px=767.94, p95 ~475
+      ```
+      **Pipeline verdict: works.** Band positive rates are the expected tens of percent, so
+      band-ECE is no longer dominated by negatives. That is the property this whole section
+      exists for.
+      **Early signals. Pipeline check only, not results (see caveats below):**
+      - Band-ECE is ~25× whole-image ECE (0.2985 vs 0.0117 raw, r=8). Whole-image ECE
+        really does hide boundary miscalibration, as hypothesized.
+      - Temperature scaling reduces band-ECE (0.2985 → 0.2442) **more than `L_calib` does**
+        (→ 0.2898). The same ordering holds at all three radii. If Fishyscapes shows the same,
+        the "L_calib beats temp scaling on the boundary" claim fails. The pre-written viva
+        framing for that outcome applies.
+      - **UBQ is saturated on CARLA, not meaningful.** CARLA FPR@95 is ~0.46 (out-of-domain
+        backgrounds), so the TPR-0.95 threshold collapses to ~0 and marks most of the frame
+        as anomalous. `pred_to_gt_px` is then just the frame-diagonal-scale distance (767.94,
+        identical for all 3 models). Not a bug in `ubq()`: Step 2 validated it. It is a
+        property of the threshold rule on a high-FPR domain. Fishyscapes FPR@95 is 0.029, so
+        the same rule should give a tight region there. The script now prints the mean
+        predicted-positive fraction and warns when it exceeds 20%.
+      - **Bug found in `eval_spatial.py` after this run, fixed before Step 4:** the first
+        version self-fit the UBQ threshold on whatever set it evaluated. For Fishyscapes that
+        would have meant fitting on the test half, against this plan's rule. It also lacked
+        the paired bootstrap. It now fits thresholds on the val half, applies them unchanged
+        to test, and runs the 1000-resample paired bootstrap from per-image
+        `ScoreHistogram(n_bins=1500)`. It also keeps logits at native output resolution and
+        upsamples per use, which avoids caching ~25MB per Fishyscapes image. CARLA numbers
+        above are unaffected: CARLA self-fits by design.
+      - **Re-run with the fixed script (2026-09-26):** every metric reproduced to 4 decimals.
+        So the native-resolution caching refactor changed no results. Predicted-positive
+        fraction was ~0.46 for all 3 models, confirming the UBQ saturation. CARLA paired
+        bootstrap (45 frames, 1000 resamples):
+        ```
+        band-ECE(L_calib) - band-ECE(temp): r=4 +0.0473 [+0.0380,+0.0561]
+                                            r=8 +0.0456 [+0.0364,+0.0538]
+                                            r=16 +0.0443 [+0.0358,+0.0507]  all exclude 0
+        band-ECE(L_calib) - band-ECE(raw):  r=4 -0.0101 [-0.0186,-0.0033]
+                                            r=8 -0.0087 [-0.0168,-0.0016]  exclude 0
+                                            r=16 -0.0051 [-0.0139,+0.0012]  includes 0
+        ```
+        On CARLA, `L_calib` is significantly *worse* than temp scaling at the boundary. It is
+        only marginally better than raw, at r≤8. Same Step 3 caveats apply. Step 4 decides.
+      - **Caveats to keep attached to these numbers.** They check that the pipeline works;
+        they are **not results to report**.
+        - These same 45 objects are in the training CutMix bank (tiled to 500), so the
+          model has seen them.
+        - CARLA-rendered backgrounds are out of domain for a Cityscapes-trained model, so
+          expect background false positives to inflate `pred_to_gt_px`.
+        - Report them as "metric validated on simulator ground truth", never as
+          generalization evidence.
+- [x] **Step 4 — Fishyscapes test half, eval-only. Done 2026-09-26, run locally by the user.**
+      Thresholds fit on the val half, applied unchanged to the 50 test images:
+      ```
+      model        whole-ECE  band-ECE r=4  r=8     r=16    band-AUROC r=8  gt_to_pred_px
+      raw          0.0004     0.2848        0.2273  0.1748  0.7318          12.83
+      temp-scaled  0.0020     0.2208        0.1845  0.1451  0.7303          13.08
+      L_calib      0.0005     0.2858        0.2396  0.1889  0.7490          11.30
+      band pos_rate: r=4 0.4878 | r=8 0.4421 | r=16 0.3519  (n_px 115479 / 226482 / 436653)
+
+      paired bootstrap (50 test images, 1000 resamples), 95% CI:
+      band-ECE(L_calib) - band-ECE(temp): r=4 +0.0649 [+0.0521,+0.0750]
+                                          r=8 +0.0551 [+0.0466,+0.0654]
+                                          r=16 +0.0438 [+0.0381,+0.0500]   all exclude 0
+      band-ECE(L_calib) - band-ECE(raw):  r=4 +0.0009 [-0.0095,+0.0129]   includes 0
+                                          r=8 +0.0123 [+0.0017,+0.0258]   excludes 0
+                                          r=16 +0.0141 [+0.0045,+0.0231]  excludes 0
+      ```
+      **Findings:**
+      - **Boundary miscalibration is real.** Raw band-ECE at r=8 is ~570× its whole-image
+        ECE (0.2273 vs 0.0004). This confirms on real data that whole-image ECE hid it.
+      - **Current `L_calib` (whole-image surrogate) does not help at the boundary.** It is
+        significantly worse than temp scaling at every radius. It is also significantly
+        worse than raw at r=8/16, and no different at r=4. On CARLA it was marginally better
+        than raw, so it reverses on real data. Treat it as no better than raw.
+      - **Temp scaling partly helps.** It drops band-ECE 0.2273 → 0.1845 at r=8. The gap to
+        whole-image ECE is still far from closed.
+      - `L_calib` does get slightly better band AUROC (0.7490 vs 0.7318, r=8) and misses
+        less object extent (`gt_to_pred_px` 11.30 vs 12.83). Edge discrimination improves,
+        but edge calibration does not. No bootstrap was run on these two, so they are
+        indicative only.
+      - **UBQ `pred_to_gt_px` is not usable at a TPR-0.95 threshold** (~1151 px for all 3
+        models). The threshold flags ~7% of each frame against a 0.28% positive rate, so a
+        single far-away false positive sets the max, and the p95 (~820-845) is just as bad.
+        `gt_to_pred_px` (missed extent) *is* meaningful. The script's ">20% of frame"
+        saturation warning was too loose to catch this at 7%. Recorded here, not changed
+        after the fact. 1/50 test images was skipped for an empty mask.
+      **Decision rule (design point 3), applied as written:** (1) raw band-ECE is clearly
+      worse than whole-image ECE: **yes**. (2) Neither temp scaling nor current `L_calib`
+      closes that gap: **yes**. Temp leaves 0.1845 against 0.0020 whole-image, and `L_calib`
+      is worse than raw. Both conditions hold, so **Step 5 is justified by the pre-registered
+      rule.** Whether to spend the pod run on it is the open decision, given the 3-day
+      assessment below.
+      **Viva framing that now applies:** "Whole-image ECE hid a large boundary
+      miscalibration (570× at r=8). A whole-image calibration loss doesn't fix it, and
+      post-hoc temperature scaling only partly does. That is the motivation for a
+      boundary-targeted loss."
+      *Original step text:*
+      Run `eval_spatial.py --dataset fishyscapes` with val-half TPR-0.95 thresholds, then
+      score the test half.
+      - Include a paired bootstrap over the 50 test images, 1000 resamples, on
+        band-ECE(L_calib) − band-ECE(temp) and band-ECE(L_calib) − band-ECE(raw).
+        This is cheap: keep one small per-image `ScoreHistogram(n_bins=1500)` per model per
+        `r` (1500 = 15 × 100, so `ece()`'s 15 bins line up exactly) and sum them per
+        resample.
+      - Apply the decision rule from design point 3 **as written above**; don't move it
+        after seeing the numbers.
+      → artifact: the table (whole-image vs. band ECE side by side, UBQ, bootstrap 95% CIs)
+        pasted into this section, plus the log file. `mlflow.db` logging is optional.
+- [ ] **Step 5 — conditional: band-masked `L_calib` fine-tune.** Only if step 4's decision
+      rule says there is band miscalibration left to fix **and** a pod plus one more run
+      still fit before the deadline.
+      → artifact: new checkpoint under a **distinct filename** (not
+        `CHECKPOINT_3HEAD_CALIB`, which holds the kept β=1 result), plus step 4's table
+        re-run with a 4th row.
+- [ ] **Nice-to-have, only if steps 1–4 finish early:** band-fitted temperature baseline
+      (design point 5); UBQ on `ood_disagreement`; a band-ECE reliability diagram, which
+      reuses `calibrate.py`'s `reliability_diagram` since it takes a dict of histograms.
+      → artifact: extra rows / an extra PNG, labeled as such.
+
+**Realistic 3-day assessment.** The full scope can't all be done in 3 days: band-ECE, UBQ
+(CARLA and Fishyscapes), a band-aware `L_calib` training variant, plus everything else
+still open in this file. The other open work is:
+- wiring the 0.9920 checkpoint into `server.py`/`README.md`, which still show 0.6190;
+- the calibration panel and v1-vs-v3 panel in `frontend/`;
+- the whole Option-1 video pipeline, which needs a live CARLA server to record a route.
+
+Proposed, in order:
+- **Day 1:** steps 1–4. All eval-only, runnable locally if CUDA is available, otherwise a
+  short pod session.
+- **Day 2:** demo wiring, with the step-4 table added to the calibration panel.
+- **Day 3:** buffer and viva prep.
+
+Step 5 happens only if the rule fires on day 1 *and* there is a pod slot. Otherwise it is
+explicitly deferred, not attempted. The video pipeline is not scheduled here. Whether it
+beats demo wiring for days 2–3 is the user's decision; this section doesn't make it.
+
+**Viva framing, set before the numbers exist. Use whichever outcome actually happens:**
+- *Band difference found (bootstrap CI excludes 0):* "On the 50-image test half, `L_calib`
+  improves boundary-region calibration versus temperature scaling. Whole-image ECE could not
+  show this." Limit the claim to this checkpoint, this split and the r range tested.
+- *No band difference, or temp wins:* "Whole-image ECE is uninformative at a 0.28% positive
+  rate; two real runs showed that. We built boundary-region ECE and UBQ to test the spatial
+  claim. The current `L_calib`, trained on a whole-image ECE surrogate, shows no measured
+  boundary advantage. The spatial hypothesis is **untested by a boundary-targeted loss**,
+  not confirmed." The methodology and this negative result can be reported as they are.
+- *Steps 1–4 not finished:* keep `CLAUDE.md`'s existing phrasing: "defined as an objective,
+  not yet measured." No partial or CARLA-only numbers presented as results.
 
 ## UBQ (Uncertainty Boundary Quality) — not started
 

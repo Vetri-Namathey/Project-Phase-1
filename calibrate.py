@@ -260,7 +260,7 @@ def reliability_diagram(hists, out_path="calibration_reliability.png"):
     """
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.plot([0, 1], [0, 1], "k--", label="perfectly calibrated")
-    colors = {"raw": "#D6401F", "temp-scaled": "#4472C4", "L_calib": "#2E8B57"}
+    colors = {"raw": "#3D5AFE", "temp-scaled": "#4472C4", "L_calib": "#2E8B57"}
     for name, hist in hists.items():
         conf, acc, weight = hist.reliability_curve()
         mask = weight > 0

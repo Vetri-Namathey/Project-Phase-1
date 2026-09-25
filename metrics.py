@@ -17,6 +17,7 @@ against sklearn including that case -- see validate_metrics.py.
 """
 
 import numpy as np
+from scipy.ndimage import distance_transform_edt
 
 import config
 
@@ -102,6 +103,22 @@ class ScoreHistogram:
         if len(reached) == 0:
             return 1.0
         return float(fp[reached[0]] / N)
+
+    def threshold_at_tpr(self, target_tpr=0.95):
+        """Fused-score threshold reaching target_tpr, same cutoff bin fpr_at_tpr
+        uses -- so a mask built as `scores >= threshold_at_tpr(t)` reproduces
+        fpr_at_tpr(t) when re-scored. Fixed on a val half, then applied
+        unchanged elsewhere (never tuned on the set it's evaluated against).
+        """
+        P = self.n_pos
+        if P == 0:
+            return float("nan")
+        tp = np.cumsum(self.pos[::-1]).astype(np.float64)
+        reached = np.nonzero((tp / P) >= target_tpr)[0]
+        if len(reached) == 0:
+            return 0.0
+        original_bin = self.n_bins - 1 - reached[0]
+        return float(original_bin / self.n_bins)
 
     def ece(self, n_bins=15):
         """Expected Calibration Error over the accumulated histogram.
@@ -227,3 +244,95 @@ class ConfusionMatrix:
     def miou(self):
         iou = self.per_class_iou()
         return float(np.nanmean(iou[~np.isnan(iou)])) if np.any(~np.isnan(iou)) else float("nan")
+
+
+# ---------------------------------------------------------------------------
+# Boundary-only ECE (Novelty 6) + UBQ shared primitives -- see PLAN.md's
+# "Boundary-only ECE (Novelty 6) + UBQ" section for the design this
+# implements. Plain functions, not a class/module, per this codebase's
+# convention of not adding abstractions beyond what's needed.
+# ---------------------------------------------------------------------------
+
+def gt_signed_distance(anomaly_mask):
+    """Euclidean distance (px) to the ground-truth anomaly edge, negative
+    inside the anomaly, positive outside. All-NaN if the mask is empty --
+    callers must check and skip that image.
+    """
+    mask = np.asarray(anomaly_mask, dtype=bool)
+    if not mask.any():
+        return np.full(mask.shape, np.nan, dtype=np.float32)
+    dist_outside = distance_transform_edt(~mask)
+    dist_inside = distance_transform_edt(mask)
+    signed = np.where(mask, -dist_inside, dist_outside)
+    return signed.astype(np.float32)
+
+
+def boundary_band(anomaly_mask, radius_px, valid=None, side="both"):
+    """Pixels within radius_px (Euclidean) of the ground-truth anomaly edge.
+
+    side="both" (default) is symmetric across the edge; "inner"/"outer"
+    restrict to just inside / just outside. `valid` (e.g. label != 255)
+    is ANDed in afterwards, matching evaluate_fused's existing convention.
+    """
+    mask = np.asarray(anomaly_mask, dtype=bool)
+    dist = gt_signed_distance(mask)
+    if np.isnan(dist).all():
+        band = np.zeros(mask.shape, dtype=bool)
+    elif side == "both":
+        band = np.abs(dist) <= radius_px
+    elif side == "inner":
+        band = (dist <= 0) & (dist >= -radius_px)
+    elif side == "outer":
+        band = (dist >= 0) & (dist <= radius_px)
+    else:
+        raise ValueError(f"unknown side {side!r}")
+    if valid is not None:
+        band = band & np.asarray(valid, dtype=bool)
+    return band
+
+
+def ubq(pred_mask, anomaly_mask, valid=None):
+    """Uncertainty Boundary Quality: directed-Hausdorff-style distances
+    between a binary predicted region and the ground-truth anomaly extent.
+
+    pred_to_gt_px: how far predicted pixels spill outside the true extent
+      (looseness). gt_to_pred_px: how much true extent the prediction
+      misses. pred_to_gt_p95 is the 95th percentile of the same distances,
+      since the max alone is decided by a single stray false-positive
+      pixel anywhere in the frame.
+
+    All distances come from EDT lookups, not
+    scipy.spatial.distance.directed_hausdorff -- that function is the
+    reference implementation validate_metrics.py's unit check compares
+    this against, not the production path (an O(H*W) EDT beats the
+    O(n*m) point-set search this would otherwise require per frame).
+
+    Returns NaN for every field if pred_mask or anomaly_mask is empty
+    (after `valid` is applied).
+    """
+    pred = np.asarray(pred_mask, dtype=bool)
+    gt = np.asarray(anomaly_mask, dtype=bool)
+    if valid is not None:
+        v = np.asarray(valid, dtype=bool)
+        pred = pred & v
+        gt = gt & v
+
+    nan_result = {
+        "pred_to_gt_px": float("nan"),
+        "gt_to_pred_px": float("nan"),
+        "pred_to_gt_p95": float("nan"),
+    }
+    if not pred.any() or not gt.any():
+        return nan_result
+
+    dist_from_gt = distance_transform_edt(~gt)
+    pred_to_gt_vals = dist_from_gt[pred]
+
+    dist_from_pred = distance_transform_edt(~pred)
+    gt_to_pred_vals = dist_from_pred[gt]
+
+    return {
+        "pred_to_gt_px": float(pred_to_gt_vals.max()),
+        "gt_to_pred_px": float(gt_to_pred_vals.max()),
+        "pred_to_gt_p95": float(np.percentile(pred_to_gt_vals, 95)),
+    }

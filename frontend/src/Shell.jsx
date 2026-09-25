@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 
 export default function Shell() {
   const location = useLocation()
@@ -6,12 +6,15 @@ export default function Shell() {
   return (
     <div className="page">
       <div className="navbar">
-        <div className="brand">
+        <Link to="/" className="brand">
           <span className="brand-mark">▣</span>
           <span className="brand-name">TWINGUARD</span>
-        </div>
+        </Link>
         <nav className="navlinks">
           <NavLink to="/" end className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
+            Home
+          </NavLink>
+          <NavLink to="/demo" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
             Detection Demo
           </NavLink>
           <NavLink to="/runs" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
