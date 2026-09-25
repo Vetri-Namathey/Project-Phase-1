@@ -39,3 +39,6 @@ scikit-learn>=1.0      # validate_metrics.py only -- metrics.py does not import 
 numpy>=1.21,<2.0
 pillow>=9.0
 scipy>=1.8
+matplotlib>=3.5   # calibrate.py's reliability diagram (Phase 2b, L_calib) --
+                  # not needed by train.py/experiment_a.py, only added here
+                  # now that calibrate.py exists

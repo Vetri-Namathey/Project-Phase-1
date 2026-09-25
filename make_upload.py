@@ -22,6 +22,7 @@ INCLUDE_FILES = [
     "losses.py",
     "metrics.py",
     "train.py",
+    "calibrate.py",
     "experiment_a.py",
     "preflight.py",
     "validate_metrics.py",

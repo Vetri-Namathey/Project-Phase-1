@@ -205,6 +205,26 @@ CALIBRATION_TRADEOFF_NOTE = (
     "is a stated, accounted-for tradeoff, not a lowered goal."
 )
 
+# --- Phase 2b: L_calib (calibrate.py) -------------------------------------
+# Joint fine-tune of an already-trained checkpoint with a differentiable
+# ECE-surrogate term added to the existing loss (see losses.py's
+# SoftECELoss). Not post-hoc temperature scaling -- see PLAN.md's
+# "Calibration (L_calib) gate" section for why a scalar rescale cannot be
+# the answer here (it cannot reshape calibration spatially, which is the
+# whole point of beating temperature scaling on boundary-region ECE/UBQ).
+BETA_CALIB = 1.0          # weight on L_calib in L_seg + alpha*L_OOD + beta*L_calib
+CALIB_EPOCHS = 5          # short fine-tune from an already-converged checkpoint
+CALIB_LEARNING_RATE = 1e-5  # same order as OOD_HEAD_LEARNING_RATE -- fine-tuning,
+                            # not training from scratch
+CALIB_AUROC_DROP_LIMIT = 0.03  # restart if val AUROC falls more than this
+                                # relative to the starting checkpoint (see
+                                # CALIBRATION_TRADEOFF_NOTE -- a *small*,
+                                # accounted-for cost, not an open-ended one)
+CHECKPOINT_3HEAD_CALIB = os.path.join(CHECKPOINT_DIR, "model_3head_calib_best.pth")
+TEMPERATURE_LEARNING_RATE = 0.01
+TEMPERATURE_EPOCHS = 3   # passes over the (small, 50-image) val half to fit
+                          # the single scalar T -- cheap, converges fast
+
 # ---------------------------------------------------------------------------
 # CutMix anomaly pasting
 # ---------------------------------------------------------------------------

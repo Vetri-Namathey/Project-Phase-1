@@ -132,6 +132,31 @@ class ScoreHistogram:
             ece += (count / total) * abs(conf - acc)
         return float(ece)
 
+    def reliability_curve(self, n_bins=15):
+        """Per-bin (confidence, accuracy, weight) for a reliability diagram.
+
+        Same binning as ece() above -- this is that computation's per-bin
+        detail instead of the single reduced scalar, so the diagram and the
+        reported ECE number can never silently disagree.
+        """
+        total = self.n_pos + self.n_neg
+        edges = np.linspace(0, self.n_bins, n_bins + 1).astype(np.int64)
+        confs, accs, weights = [], [], []
+        for i in range(n_bins):
+            lo, hi = edges[i], edges[i + 1]
+            count = self.pos[lo:hi].sum() + self.neg[lo:hi].sum()
+            if count == 0:
+                confs.append(float("nan"))
+                accs.append(float("nan"))
+                weights.append(0.0)
+                continue
+            conf = (self.conf_sum_pos[lo:hi].sum() + self.conf_sum_neg[lo:hi].sum()) / count
+            acc = self.pos[lo:hi].sum() / count
+            confs.append(float(conf))
+            accs.append(float(acc))
+            weights.append(float(count) / total if total else 0.0)
+        return np.array(confs), np.array(accs), np.array(weights)
+
     def summary(self, prefix=""):
         return {
             f"{prefix}auroc": self.auroc(),

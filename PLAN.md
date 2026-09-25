@@ -254,6 +254,43 @@ recorded here so this isn't re-litigated from scratch next session.
   Documented fallback if temp scaling ties on whole-image ECE: pivot the claim entirely to
   boundary ECE + UBQ, since a scalar fix structurally can't compete there.
 
+### L_calib — implemented 2026-09-25, not yet run on real data
+
+Code written and locally sanity-checked; **no real training run has happened yet** — this
+needs the pod (GPU + real Cityscapes/Fishyscapes), not just correct code.
+
+- [x] `losses.py`'s `SoftECELoss` — differentiable ECE surrogate (soft-binned, triangular
+      kernel membership, squared per-bin conf/acc gap). Unit-tested locally on synthetic
+      data (no GPU/dataset needed): near-zero loss on a well-calibrated synthetic score,
+      clearly higher on a deliberately overconfident one, gradients finite and flowing.
+      This is the actual test that exists — it proves the loss is directionally correct
+      and differentiable, NOT that it works on the real model/data.
+- [x] `metrics.py`'s `ScoreHistogram.reliability_curve()` — per-bin (confidence, accuracy,
+      weight), sharing `ece()`'s own binning so the diagram and the reported ECE number
+      can never silently disagree.
+- [x] `config.py` — `BETA_CALIB`, `CALIB_EPOCHS`, `CALIB_LEARNING_RATE`,
+      `CALIB_AUROC_DROP_LIMIT`, `CHECKPOINT_3HEAD_CALIB`, `TEMPERATURE_*` added.
+- [x] `calibrate.py` (new file) — three steps in one script: (1) fits a temperature-scaling
+      baseline on the Fishyscapes val half; (2) joint fine-tune of the already-verified
+      checkpoint (`model_3head_best.pth`, AUROC=0.9920) with `SoftECELoss` added to the
+      existing seg+OOD loss, selecting on val ECE, stopping (not saving) if val AUROC drops
+      more than `CALIB_AUROC_DROP_LIMIT`; (3) the comparison table (raw vs. temp-scaled vs.
+      L_calib, whole-image AUROC/AP/FPR@95/ECE) plus a saved reliability-diagram PNG, both
+      logged to MLflow. Added to `make_upload.py`'s file list and `requirements-runpod.txt`
+      (needed `matplotlib`, which the training-only requirements file didn't have before).
+- [ ] **Not done — the actual run.** `calibrate.py` has never been executed against the
+      real checkpoint/dataset. `python -m py_compile` passes and the loss unit test passes,
+      but that is not the same as a real result. Do not quote any AUROC/ECE numbers for
+      L_calib or temperature scaling until this has actually run on the pod.
+      → artifact: MLflow runs `l_calib_finetune` (or `temperature_scaling_only` for a
+        quick check), the comparison table's printed output, `calibration_reliability.png`.
+- [ ] Whole-image ECE is what this table can show. Boundary-only ECE (Novelty 6) and UBQ
+      are still unbuilt (see the UBQ section below) — the comparison table's own printed
+      output says this explicitly, so it can't be quoted as proving the spatial claim on
+      its own.
+- [ ] Frontend integration (the "Proof-of-change outputs" section right below this one) is
+      still entirely unbuilt — nothing from this section is in `frontend/`/`server.py` yet.
+
 ### Proof-of-change outputs — and getting them into the live demo, not just MLflow
 
 Decided in discussion: the calibration work isn't done when the fine-tune finishes —
