@@ -213,15 +213,22 @@ CALIBRATION_TRADEOFF_NOTE = (
 # the answer here (it cannot reshape calibration spatially, which is the
 # whole point of beating temperature scaling on boundary-region ECE/UBQ).
 
-# BETA_CALIB was 1.0 for the first real run (2026-09-25) and produced a
-# negligible effect: logged calib-loss values were ~0.0002-0.0012 against a
-# base (seg+OOD) loss of ~0.05-0.11, meaning L_calib contributed under 1% of
-# the gradient -- the fine-tune was effectively just re-running the base
-# objective. 50 puts L_calib's weighted contribution in the same order of
-# magnitude as the base loss (ratio of base/calib across that run's observed
-# range was ~42-550x), enough to actually move the model instead of riding
-# along unused. Re-tune from here if it over/under-shoots on the next run.
-BETA_CALIB = 50           # weight on L_calib in L_seg + alpha*L_OOD + beta*L_calib
+# BETA_CALIB tuning history (2026-09-25, both real runs -- see PLAN.md for
+# the full comparison table):
+#   1.0  -- calib-loss ~0.0002-0.0012 against a base loss of ~0.05-0.11
+#           (under 1% of the gradient). Result: AUROC/ECE ~unchanged from
+#           raw (0.9924/0.0005 vs raw's 0.9920/0.0004) -- a near-no-op.
+#   50   -- drove the SURROGATE loss down further (0.0001, i.e. the training
+#           signal DID strengthen as intended), but the REAL histogram ECE
+#           got WORSE (0.0014) and AUROC dropped more (0.9898). A genuine
+#           surrogate/true-metric mismatch, not a bug: optimizing a smooth
+#           relaxation of ECE harder does not reliably improve real ECE
+#           under this severe (~0.28%) class imbalance, where whole-image
+#           ECE is dominated by trivial true-negative pixels regardless.
+# Reverted to 1.0 -- the near-no-op result is the honest, reportable one.
+# Do not re-tune this further without boundary-only ECE/UBQ in hand first;
+# whole-image ECE alone was already flagged as too weak a signal to chase.
+BETA_CALIB = 1.0          # weight on L_calib in L_seg + alpha*L_OOD + beta*L_calib
 CALIB_EPOCHS = 5          # short fine-tune from an already-converged checkpoint
 CALIB_LEARNING_RATE = 1e-5  # same order as OOD_HEAD_LEARNING_RATE -- fine-tuning,
                             # not training from scratch

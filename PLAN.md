@@ -309,7 +309,35 @@ needs the pod (GPU + real Cityscapes/Fishyscapes), not just correct code.
         before averaging is not exactly the same monotonic transform as scaling the
         fused score directly. Expected, not a bug.
       → artifact: `calibrate.log` (full run log), `model_3head_calib_best.pth`,
-        `calibration_reliability.png` — pulled off the pod to local machine 2026-09-25.
+        `calibration_reliability.png` — pulled off the pod to local machine 2026-09-25
+        (this is the BETA_CALIB=1.0 run's artifacts — see below, this is the one kept).
+
+- [x] **Tuning attempt, 2026-09-25, reverted — BETA_CALIB=1.0 → 50 → back to 1.0.**
+      The near-no-op result above was suspected to be caused by L_calib's gradient
+      contribution being under 1% of the base loss (raw calib-loss ~0.0002-0.0012 vs.
+      base ~0.05-0.11), so `BETA_CALIB` was raised to 50 and `calibrate.py` re-run.
+      Result: **worse on every axis except AP**.
+      ```
+                      AUROC      AP  FPR@95     ECE
+      raw            0.9920  0.6215  0.0290  0.0004
+      L_calib (β=1)  0.9924  0.6024  0.0293  0.0005   -- near-no-op
+      L_calib (β=50) 0.9898  0.6116  0.0301  0.0014   -- worse on AUROC, FPR@95, ECE
+      ```
+      The raw *surrogate* loss did shrink further under β=50 (0.0001, down from
+      ~0.0004-0.0006) — so the training signal genuinely strengthened as intended — but
+      the real, histogram-based ECE (`metrics.py`) got worse anyway. This is a real
+      surrogate/true-metric mismatch, not a bug in either implementation: pushing the
+      smooth soft-binned relaxation down harder does not reliably improve the real,
+      hard-binned ECE under this severe (~0.28%) class imbalance, where whole-image ECE
+      is dominated by trivial true-negative pixels regardless of what happens on the
+      harder ones. **Decision: reverted `BETA_CALIB` to 1.0** — the near-no-op result is
+      the one being reported, not chased further. Do not re-tune `BETA_CALIB` again
+      without boundary-only ECE/UBQ in hand first; whole-image ECE has now failed twice
+      (once by being trivially already-low, once by not responding sensibly to a
+      stronger training signal) as a metric worth optimizing against directly.
+      → artifact: `calibrate2.log` (the β=50 run, pod-only, not pulled to local — the
+        β=1 checkpoint above is the one that matters and is already saved locally).
+
 - [ ] Whole-image ECE is what this table can show. Boundary-only ECE (Novelty 6) and UBQ
       are still unbuilt (see the UBQ section below) — the comparison table's own printed
       output says this explicitly, so it can't be quoted as proving the spatial claim on
