@@ -1,0 +1,69 @@
+nohup: ignoring input
+device: cuda (NVIDIA A40, 48GB)
+fitting temperature scaling baseline...
+  epoch 1/3: T=1.5688  loss=0.0847
+  epoch 2/3: T=1.6421  loss=0.0825
+  epoch 3/3: T=1.7142  loss=0.0807
+2026/09/25 15:19:12 INFO mlflow.store.db.utils: Creating initial MLflow database tables...
+2026/09/25 15:19:12 INFO mlflow.store.db.utils: Updating database tables
+2026/09/25 15:19:25 INFO mlflow.tracking.fluent: Experiment with name 'twinguard_section12_1head_vs_3head' does not exist. Creating a new experiment.
+anomaly source: both (2000 objects)
+calib dataloader: 744 steps/epoch, num_workers=16
+base checkpoint val AUROC: 0.9762 (fine-tune stops if this drops by more than 0.03)
+  calib epoch 1/5 step 0/744 loss=0.0879 (base=0.0877 calib=0.0002)
+  calib epoch 1/5 step 100/744 loss=0.0715 (base=0.0711 calib=0.0004)
+  calib epoch 1/5 step 200/744 loss=0.0823 (base=0.0820 calib=0.0003)
+  calib epoch 1/5 step 300/744 loss=0.1111 (base=0.1110 calib=0.0001)
+  calib epoch 1/5 step 400/744 loss=0.0904 (base=0.0900 calib=0.0005)
+  calib epoch 1/5 step 500/744 loss=0.0656 (base=0.0653 calib=0.0003)
+  calib epoch 1/5 step 600/744 loss=0.0724 (base=0.0718 calib=0.0006)
+  calib epoch 1/5 step 700/744 loss=0.0719 (base=0.0716 calib=0.0002)
+calib epoch 1/5 done -- val AUROC=0.9757 (drop +0.0005) val ECE=0.0009 avg_calib_loss=0.0005
+  -> new best val ECE 0.0009, checkpoint saved
+  calib epoch 2/5 step 0/744 loss=0.0692 (base=0.0687 calib=0.0005)
+  calib epoch 2/5 step 100/744 loss=0.0763 (base=0.0755 calib=0.0008)
+  calib epoch 2/5 step 200/744 loss=0.0939 (base=0.0934 calib=0.0005)
+  calib epoch 2/5 step 300/744 loss=0.0847 (base=0.0844 calib=0.0003)
+  calib epoch 2/5 step 400/744 loss=0.0731 (base=0.0719 calib=0.0012)
+  calib epoch 2/5 step 500/744 loss=0.0542 (base=0.0536 calib=0.0006)
+  calib epoch 2/5 step 600/744 loss=0.0782 (base=0.0778 calib=0.0004)
+  calib epoch 2/5 step 700/744 loss=0.0996 (base=0.0994 calib=0.0002)
+calib epoch 2/5 done -- val AUROC=0.9733 (drop +0.0029) val ECE=0.0012 avg_calib_loss=0.0004
+  calib epoch 3/5 step 0/744 loss=0.0667 (base=0.0659 calib=0.0008)
+  calib epoch 3/5 step 100/744 loss=0.0803 (base=0.0798 calib=0.0004)
+  calib epoch 3/5 step 200/744 loss=0.0884 (base=0.0881 calib=0.0003)
+  calib epoch 3/5 step 300/744 loss=0.0708 (base=0.0702 calib=0.0007)
+  calib epoch 3/5 step 400/744 loss=0.1066 (base=0.1060 calib=0.0006)
+  calib epoch 3/5 step 500/744 loss=0.0795 (base=0.0791 calib=0.0004)
+  calib epoch 3/5 step 600/744 loss=0.0971 (base=0.0967 calib=0.0004)
+  calib epoch 3/5 step 700/744 loss=0.0503 (base=0.0499 calib=0.0003)
+calib epoch 3/5 done -- val AUROC=0.9729 (drop +0.0033) val ECE=0.0010 avg_calib_loss=0.0004
+  calib epoch 4/5 step 0/744 loss=0.0574 (base=0.0571 calib=0.0003)
+  calib epoch 4/5 step 100/744 loss=0.0799 (base=0.0794 calib=0.0005)
+  calib epoch 4/5 step 200/744 loss=0.0743 (base=0.0738 calib=0.0005)
+  calib epoch 4/5 step 300/744 loss=0.0565 (base=0.0562 calib=0.0003)
+  calib epoch 4/5 step 400/744 loss=0.0761 (base=0.0755 calib=0.0006)
+  calib epoch 4/5 step 500/744 loss=0.0767 (base=0.0763 calib=0.0004)
+  calib epoch 4/5 step 600/744 loss=0.0663 (base=0.0658 calib=0.0005)
+  calib epoch 4/5 step 700/744 loss=0.0784 (base=0.0783 calib=0.0001)
+calib epoch 4/5 done -- val AUROC=0.9731 (drop +0.0031) val ECE=0.0009 avg_calib_loss=0.0004
+  calib epoch 5/5 step 0/744 loss=0.0650 (base=0.0649 calib=0.0002)
+  calib epoch 5/5 step 100/744 loss=0.0721 (base=0.0717 calib=0.0004)
+  calib epoch 5/5 step 200/744 loss=0.0806 (base=0.0805 calib=0.0001)
+  calib epoch 5/5 step 300/744 loss=0.0727 (base=0.0726 calib=0.0001)
+  calib epoch 5/5 step 400/744 loss=0.0531 (base=0.0528 calib=0.0004)
+  calib epoch 5/5 step 500/744 loss=0.0628 (base=0.0625 calib=0.0003)
+  calib epoch 5/5 step 600/744 loss=0.0765 (base=0.0759 calib=0.0005)
+  calib epoch 5/5 step 700/744 loss=0.0785 (base=0.0782 calib=0.0003)
+calib epoch 5/5 done -- val AUROC=0.9732 (drop +0.0030) val ECE=0.0010 avg_calib_loss=0.0004
+L_calib fine-tune done. selected epoch 1
+model            AUROC      AP  FPR@95     ECE
+----------------------------------------------
+raw             0.9920  0.6215  0.0290  0.0004
+temp-scaled     0.9924  0.6193  0.0287  0.0020
+L_calib         0.9924  0.6024  0.0293  0.0005
+
+temperature (fitted): 1.7142
+0.75 is the pre-calibration gate to begin Phase 2b (L_calib); 0.83 (Experiment A baseline) remains the actual post-calibration target Model v3 must approach or match. The bar did not move -- calibration is a stated, accounted-for tradeoff, not a lowered goal.
+Note: whole-image ECE only. Boundary-only ECE (Novelty 6) and UBQ are separate, still-unbuilt metrics -- this table alone cannot prove L_calib beats temperature scaling on the spatial claim that is the actual point of building it (see PLAN.md).
+saved calibration_reliability.png
