@@ -278,12 +278,38 @@ needs the pod (GPU + real Cityscapes/Fishyscapes), not just correct code.
       L_calib, whole-image AUROC/AP/FPR@95/ECE) plus a saved reliability-diagram PNG, both
       logged to MLflow. Added to `make_upload.py`'s file list and `requirements-runpod.txt`
       (needed `matplotlib`, which the training-only requirements file didn't have before).
-- [ ] **Not done — the actual run.** `calibrate.py` has never been executed against the
-      real checkpoint/dataset. `python -m py_compile` passes and the loss unit test passes,
-      but that is not the same as a real result. Do not quote any AUROC/ECE numbers for
-      L_calib or temperature scaling until this has actually run on the pod.
-      → artifact: MLflow runs `l_calib_finetune` (or `temperature_scaling_only` for a
-        quick check), the comparison table's printed output, `calibration_reliability.png`.
+- [x] **Real run done 2026-09-25** on RunPod (A40), against `model_3head_best.pth`
+      (AUROC=0.9920, the verified post-rebalance checkpoint). Fine-tune ran 5 epochs,
+      AUROC-drop guard never triggered (max drop 0.0033 at epoch 3, well under the 0.03
+      limit), selected epoch 1 (best val ECE 0.0009). Full comparison table, test half:
+
+      ```
+      model            AUROC      AP  FPR@95     ECE
+      raw             0.9920  0.6215  0.0290  0.0004
+      temp-scaled     0.9924  0.6193  0.0287  0.0020
+      L_calib         0.9924  0.6024  0.0293  0.0005
+      ```
+      fitted temperature: 1.7142.
+
+      **Honest read, not a clean win:** temperature scaling made whole-image ECE *worse*
+      (0.0004 → 0.0020), and `L_calib`'s ECE (0.0005) is barely different from raw's
+      already-tiny 0.0004. This is very likely the exact limitation `PLAN.md` already
+      anticipated above: at Fishyscapes' extreme 0.28% positive rate, whole-image ECE is
+      dominated by the overwhelming majority of easy true-negative pixels, so an
+      already-high-AUROC model (0.992) gets a trivially low ECE almost regardless of how
+      well-calibrated the hard/boundary pixels actually are — `metrics.py`'s own `ece()`
+      docstring warns about exactly this class of near-perfect-but-meaningless ECE. **This
+      table does not support a "L_calib beats temperature scaling" claim** — it's real
+      empirical confirmation that whole-image ECE can't show the difference, which is
+      *why* boundary-ECE/UBQ were always the load-bearing metrics for this claim, not a
+      fallback.
+      - Small legitimate side-note: AUROC moved slightly under temperature scaling
+        (0.9920 → 0.9924) even though a scalar rescale is monotonic per-head — this is
+        because fusion is mean-of-per-head-sigmoids, and scaling each head individually
+        before averaging is not exactly the same monotonic transform as scaling the
+        fused score directly. Expected, not a bug.
+      → artifact: `calibrate.log` (full run log), `model_3head_calib_best.pth`,
+        `calibration_reliability.png` — pulled off the pod to local machine 2026-09-25.
 - [ ] Whole-image ECE is what this table can show. Boundary-only ECE (Novelty 6) and UBQ
       are still unbuilt (see the UBQ section below) — the comparison table's own printed
       output says this explicitly, so it can't be quoted as proving the spatial claim on

@@ -212,7 +212,16 @@ CALIBRATION_TRADEOFF_NOTE = (
 # "Calibration (L_calib) gate" section for why a scalar rescale cannot be
 # the answer here (it cannot reshape calibration spatially, which is the
 # whole point of beating temperature scaling on boundary-region ECE/UBQ).
-BETA_CALIB = 1.0          # weight on L_calib in L_seg + alpha*L_OOD + beta*L_calib
+
+# BETA_CALIB was 1.0 for the first real run (2026-09-25) and produced a
+# negligible effect: logged calib-loss values were ~0.0002-0.0012 against a
+# base (seg+OOD) loss of ~0.05-0.11, meaning L_calib contributed under 1% of
+# the gradient -- the fine-tune was effectively just re-running the base
+# objective. 50 puts L_calib's weighted contribution in the same order of
+# magnitude as the base loss (ratio of base/calib across that run's observed
+# range was ~42-550x), enough to actually move the model instead of riding
+# along unused. Re-tune from here if it over/under-shoots on the next run.
+BETA_CALIB = 50           # weight on L_calib in L_seg + alpha*L_OOD + beta*L_calib
 CALIB_EPOCHS = 5          # short fine-tune from an already-converged checkpoint
 CALIB_LEARNING_RATE = 1e-5  # same order as OOD_HEAD_LEARNING_RATE -- fine-tuning,
                             # not training from scratch
