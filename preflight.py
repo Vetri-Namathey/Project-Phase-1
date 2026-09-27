@@ -198,9 +198,13 @@ def c_anomaly_bank():
 def c_no_excluded_categories():
     """The single most damaging possible mistake with COCO: leaking a
     category Cityscapes already knows would train the model that cars are
-    anomalies."""
-    if config.ANOMALY_SOURCE != "coco":
-        return PASS, "source is not coco -- exclusion check not applicable"
+    anomalies.
+
+    Runs for every source that draws on the COCO bank. main's "both" source
+    skipped it because this used to test `!= "coco"`, so a pooled bank was
+    never checked at all."""
+    if config.ANOMALY_SOURCE not in ("coco", "both"):
+        return PASS, "source does not use COCO -- exclusion check not applicable"
     import glob
     names = [os.path.basename(p) for p in
              glob.glob(os.path.join(config.COCO_OBJECTS_DIR, "*_rgb.png"))]
@@ -235,7 +239,7 @@ def c_cutmix():
     pos_rates, sizes, counts = [], [], []
     with_objects, ignore_ok = 0, 0
     for i in range(n_samples):
-        _, seg, ood = aug[i]
+        _, seg, ood, _ = aug[i]
         ood_np = ood.numpy() > 0
         pos_rates.append(float(ood_np.mean()))
         if not ood_np.any():
@@ -362,6 +366,123 @@ def c_global_rng_not_hijacked():
                   "reproducible from their own seeds and independent of it")
 
 
+def c_degradations():
+    """Section III-C's degradation half. Default-off, so this reports its
+    state rather than failing -- but it still exercises the code, because a
+    path that is only ever run the day Phase 2b starts is a path that breaks
+    the day Phase 2b starts."""
+    import numpy as _np
+    from data.degradations import DEGRADATIONS, apply_random_degradation
+
+    rng = _np.random.default_rng(0)
+    image = (rng.random((64, 128, 3)) * 255).astype(_np.uint8)
+
+    applied = []
+    for name in sorted(DEGRADATIONS):
+        fn, (lo, hi) = DEGRADATIONS[name]
+        out = fn(image.astype(_np.float32) / 255.0, (lo + hi) / 2, rng)
+        if out.shape != image.shape:
+            return FAIL, f"{name} changed the image shape to {out.shape}"
+        if not (0.0 <= out.min() and out.max() <= 1.0):
+            return FAIL, f"{name} produced values outside [0,1]"
+        delta = float(_np.abs(out - image.astype(_np.float32) / 255.0).mean())
+        if delta < 1e-3:
+            return FAIL, f"{name} barely changed the image (mean delta {delta:.5f})"
+        applied.append(f"{name} d={delta:.3f}")
+
+    out, name = apply_random_degradation(image, rng)
+    if out.dtype != _np.uint8 or out.shape != image.shape:
+        return FAIL, "apply_random_degradation broke the uint8 HxWx3 contract"
+
+    state = (f"Phase 2a ACTIVE at p={config.DEGRADATION_PROB}"
+             if config.DEGRADATION_PROB > 0 else "Phase 2a off")
+    state += f", Phase 2b fine-tune p={config.CALIB_DEGRADATION_PROB}"
+    return PASS, f"{state}; all 3 work: " + ", ".join(applied)
+
+
+def c_calib_loss():
+    """L_calib must be ~0 on calibrated scores, clearly >0 on overconfident
+    ones, and pass a gradient back -- a surrogate with no gradient trains
+    nothing, which is exactly how a silent no-op fine-tune would look."""
+    import torch
+    from losses import SoftECELoss, boundary_band_torch
+
+    gen = torch.Generator().manual_seed(0)
+    soft_ece = SoftECELoss()
+    p = torch.rand(200_000, generator=gen)
+    calibrated = (torch.rand(200_000, generator=gen) < p).float()
+    low = soft_ece(p, calibrated).item()
+
+    overconfident = torch.full((200_000,), 0.9, requires_grad=True)
+    targets = (torch.rand(200_000, generator=gen) < 0.5).float()
+    high_t = soft_ece(overconfident, targets)
+    high_t.backward()
+    high = high_t.item()
+    if not low < 1e-3 < high:
+        return FAIL, (f"soft-ECE does not separate calibrated ({low:.5f}) from "
+                      f"overconfident ({high:.5f}) scores")
+    if overconfident.grad is None or overconfident.grad.abs().sum() == 0:
+        return FAIL, "soft-ECE passes no gradient to the scores"
+
+    # 20x20 object, r=3 -> a ring 3px either side of its edge.
+    t = torch.zeros(1, 64, 64)
+    t[0, 20:40, 20:40] = 1.0
+    band = boundary_band_torch(t, 3)[0]
+    if band[30, 30] or band[5, 5] or not (band[20, 30] and band[18, 30] and band[22, 30]):
+        return FAIL, "boundary band is not a ring around the object edge"
+    if boundary_band_torch(torch.zeros(1, 64, 64), 3).any():
+        return FAIL, "boundary band is non-empty on an image with no object"
+
+    return PASS, (f"soft-ECE calibrated={low:.5f} overconfident={high:.4f}, "
+                  f"gradient flows; band ring correct; region="
+                  f"{config.CALIB_LOSS_REGION} r={config.CALIB_BAND_RADIUS_PX}")
+
+
+def c_dual_mode():
+    """Section III-A. The latency claim rests on the encoder running ONCE
+    while the heads run N times, so that is what gets checked -- not just
+    that the function returns something."""
+    import torch
+    from model.twinguard_model import TwinGuardModel
+
+    model = TwinGuardModel(num_ood_heads=3, ood_seeds=config.OOD_HEAD_SEEDS_3HEAD)
+    model.eval()
+    x = torch.randn(1, 3, 128, 256)
+
+    cont = model.predict_dual_mode(x, trigger_threshold=1.01)
+    if cont["mode"] != "continuous" or cont["n_passes"] != 1:
+        return FAIL, f"continuous mode reported {cont['mode']}/{cont['n_passes']} passes"
+    if cont["epistemic_uncertainty"] is not None:
+        return FAIL, "continuous mode computed MC-Dropout -- it must not"
+
+    safe = model.predict_dual_mode(x, n_passes=4, force_safety=True)
+    for key in ("epistemic_uncertainty", "parametric_uncertainty", "ood_fused_mc"):
+        if safe.get(key) is None:
+            return FAIL, f"safety mode did not produce {key}"
+    if torch.allclose(safe["epistemic_uncertainty"], safe["parametric_uncertainty"]):
+        return FAIL, ("epistemic and parametric uncertainty are identical -- "
+                      "Section III-A defines them as different quantities")
+
+    # Dropout must actually be stochastic, and must be left off afterwards.
+    hidden = model.encode(x)
+    a = model.heads_from_features(hidden, (128, 256), stochastic=True)
+    b = model.heads_from_features(hidden, (128, 256), stochastic=True)
+    c = model.heads_from_features(hidden, (128, 256), stochastic=False)
+    d = model.heads_from_features(hidden, (128, 256), stochastic=False)
+    if torch.allclose(a, b):
+        return FAIL, "stochastic passes are identical -- dropout is not active"
+    if not torch.allclose(c, d):
+        return FAIL, "deterministic passes differ -- dropout leaked into eval"
+    if any(h.training for h in model.ood_heads):
+        return FAIL, "heads left in train() after a stochastic pass"
+    if model.encoder.training:
+        return FAIL, "encoder left in train() -- it must never be stochastic"
+
+    return PASS, (f"continuous=1 pass, safety={config.MC_DROPOUT_PASSES} passes/head "
+                  f"over ONE cached encoder pass; epistemic and parametric differ; "
+                  f"trigger threshold {config.SAFETY_TRIGGER_THRESHOLD}")
+
+
 def c_loss_step():
     """One real optimiser step -- catches shape/dtype errors that would
     otherwise surface an hour into a paid run."""
@@ -425,11 +546,26 @@ def c_device():
                       "days. Fine for preflight, not for the real run.")
     name = torch.cuda.get_device_name(0)
     total = torch.cuda.get_device_properties(0).total_memory / 1e9
+    # Measured 2026-09-26 on an RTX 3050 Ti (4GB), full train step at
+    # 512x1024 under bf16: batch 2 reserves 2.61GB, batch 4 reserves 4.81GB.
+    # Over the card's size Windows does NOT raise out-of-memory -- it pages
+    # GPU memory into system RAM and the run gets 8x slower per image. So
+    # this has to be caught here, before training, not noticed an hour in.
+    reserved_per_image = 4.81 / 4 + 0.2   # rough, for the warning only
+    needed = reserved_per_image * config.BATCH_SIZE
+    effective = config.BATCH_SIZE * config.GRAD_ACCUM_STEPS
+    if needed > total * 0.9:
+        return WARN, (f"{name}, {total:.1f}GB -- batch {config.BATCH_SIZE} needs "
+                      f"~{needed:.1f}GB and will silently spill into system RAM "
+                      f"(8x slower). Set TWINGUARD_BATCH_SIZE=2 and "
+                      f"TWINGUARD_GRAD_ACCUM=2 (see LOCAL_GUIDE.md).")
+    if effective != 4:
+        return WARN, (f"{name}, {total:.1f}GB -- effective batch {effective} "
+                      f"differs from the validated recipe's 4 "
+                      f"(batch {config.BATCH_SIZE} x accum {config.GRAD_ACCUM_STEPS})")
     if total < 20:
-        return WARN, (f"{name}, {total:.0f}GB -- the b5 encoder at "
-                      f"{config.INPUT_HEIGHT}x{config.INPUT_WIDTH} and batch "
-                      f"{config.BATCH_SIZE} wants ~20GB+. Reduce BATCH_SIZE "
-                      f"or use a larger GPU.")
+        return PASS, (f"{name}, {total:.1f}GB -- batch {config.BATCH_SIZE} x "
+                      f"accum {config.GRAD_ACCUM_STEPS} = effective {effective}")
     return PASS, f"{name}, {total:.0f}GB"
 
 
@@ -448,7 +584,10 @@ def main():
         ("cutmix output", c_cutmix, True),
         ("model wiring", c_model, True),
         ("global RNG not hijacked", c_global_rng_not_hijacked, True),
+        ("degradation augmentation", c_degradations, False),
+        ("dual-mode inference", c_dual_mode, True),
         ("one training step", c_loss_step, True),
+        ("L_calib loss (Phase 2b)", c_calib_loss, True),
         ("metrics", c_metrics, True),
         ("compute device", c_device, False),
     ]

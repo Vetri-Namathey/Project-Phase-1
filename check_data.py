@@ -61,7 +61,7 @@ def show_cutmix(n, out):
 
     tiles, sizes, rates = [], [], []
     for i in range(n):
-        image_t, _, ood = aug[i * 7]
+        image_t, _, ood, _ = aug[i * 7]
         rgb = (denormalize_imagenet(image_t).permute(1, 2, 0).numpy() * 255)
         rgb = rgb.astype(np.uint8).copy()
 

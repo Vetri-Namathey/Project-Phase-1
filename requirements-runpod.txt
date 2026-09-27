@@ -16,7 +16,7 @@
 #    NumPy 1.x cannot be run in NumPy 2.x"), and letting pip pull numpy 2
 #    alongside an inherited torch is a self-inflicted outage.
 
-transformers>=4.46.3,<5    # Two independent version constraints bite here, and
+transformers>=4.46.3,<4.51 # Two independent version constraints bite here, and
                            # both have misleading error messages:
                            #
                            # <5      transformers 5.x needs torch>=2.5 and SILENTLY
@@ -29,9 +29,10 @@ transformers>=4.46.3,<5    # Two independent version constraints bite here, and
                            #         refuses torch.load under CVE-2025-32434 and tells
                            #         you to use safetensors -- but nvidia/segformer-*
                            #         ships pytorch_model.bin ONLY, so there is nothing
-                           #         to switch to. If your torch is <2.6, either
-                           #         upgrade torch to >=2.6 (preferred) or add the
-                           #         <4.51 cap here.
+                           #         to switch to. The shared pod's torch is <2.6,
+                           #         so the cap is set. Do NOT upgrade torch on
+                           #         the pod to lift it -- that broke cuDNN
+                           #         there. 4.49.0 is the verified version.
                            #
                            # preflight.py checks both combinations and prints the fix.
 mlflow>=2.16
@@ -39,3 +40,4 @@ scikit-learn>=1.0      # validate_metrics.py only -- metrics.py does not import 
 numpy>=1.21,<2.0
 pillow>=9.0
 scipy>=1.8
+matplotlib>=3.5        # calibrate.py reliability diagram

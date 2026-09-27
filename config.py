@@ -1,8 +1,9 @@
 """Central configuration for TwinGuard (Experiment A / B).
 
 Single source of truth for paths, seeds, and hyperparameters shared across
-data/, model/, losses.py, metrics.py, and train.py. Nothing from Phase 2b
-(L_calib, MC-Dropout, temporal metrics) lives here yet.
+data/, model/, losses.py, metrics.py, train.py and calibrate.py. Phase 2b
+(L_calib, calibrate.py) has its own section below; temporal metrics are not
+built yet.
 """
 
 import os
@@ -20,6 +21,9 @@ import os
 # assembled from separate components rather than written as literal strings,
 # so the same config works on Windows and on the Linux pod -- a hardcoded
 # "a\b" separator silently becomes part of the filename on Linux.
+# NOTE: this default is ONE developer's local Windows layout, not a path any
+# other machine has. It is only a fallback -- set TWINGUARD_DATA_ROOT (or the
+# per-path variables below) and it is never read. See README, "2. Get the datasets".
 _DEFAULT_DATA_ROOT = r"D:\Academics (D)\SEM-7\PROJECTS\FinalYearProject\gtFine_trainvaltest"
 _DATA_ROOT = os.environ.get("TWINGUARD_DATA_ROOT", _DEFAULT_DATA_ROOT)
 
@@ -47,6 +51,14 @@ FISHYSCAPES_LABELS_DIR = _data_path(
     "FISHYSCAPES_LABELS_DIR", "fishyscapes_lostandfound")
 FISHYSCAPES_IMAGES_ROOT = _data_path(
     "FISHYSCAPES_IMAGES_ROOT", "leftImg8bit", "leftImg8bit")
+
+# RoadAnomaly21 (SegmentMeIfYouCan anomaly track, zenodo.org/records/5270237,
+# md5 231bf79ed58924bcd33d9cbe22e61076). 100 test images whose labels are
+# WITHHELD (scored only by the official online benchmark) + 10 validation
+# images with public labels (0 normal, 1 anomaly, 255 void -- same encoding
+# as Fishyscapes). Eval-only, never trained on, like Fishyscapes.
+ROAD_ANOMALY21_DIR = _data_path(
+    "ROAD_ANOMALY21_DIR", "road_anomaly21", "dataset_AnomalyTrack")
 
 # CARLA-generated OOD objects, from generate_anomalies.py (needs a running
 # CARLA server). This remains the canonical anomaly source for the project.
@@ -136,7 +148,18 @@ OOD_HEAD_SEEDS_3HEAD = [42, 123, 7]
 # with margin. Raise it only if the metric trend is still clearly climbing
 # at the end of a run.
 EPOCHS = 8
-BATCH_SIZE = 4
+
+# Images per forward pass, and how many passes are summed before each
+# optimiser step. Effective batch = BATCH_SIZE * GRAD_ACCUM_STEPS, and that
+# product is what the validated recipe (0.79 AP) used: 4.
+#
+# Defaults suit a 20GB+ GPU. On a 4GB laptop GPU batch 4 needs 4.81GB
+# reserved, and Windows then silently pages GPU memory into system RAM:
+# measured 1.43 s/image at batch 4 vs 0.18 s/image at batch 2 on an RTX 3050
+# Ti -- 8x slower, with no error. There, use batch 2 x 2 accumulation:
+#     $env:TWINGUARD_BATCH_SIZE = "2"; $env:TWINGUARD_GRAD_ACCUM = "2"
+BATCH_SIZE = int(os.environ.get("TWINGUARD_BATCH_SIZE", "4"))
+GRAD_ACCUM_STEPS = int(os.environ.get("TWINGUARD_GRAD_ACCUM", "1"))
 
 # Mixed precision for the forward pass. The frozen b5 encoder dominates
 # runtime -- 2976 images per epoch through it -- and bfloat16 roughly halves
@@ -183,6 +206,66 @@ CALIBRATION_TRADEOFF_NOTE = (
     "is a stated, accounted-for tradeoff, not a lowered goal."
 )
 
+# --- Phase 2b: L_calib (calibrate.py) -------------------------------------
+# Joint fine-tune of an already-trained checkpoint with beta * L_calib added
+# (losses.SoftECELoss), compared against temperature scaling as the
+# baseline it has to beat.
+#
+# WHERE the calibration is measured matters more than anything else here.
+# Whole-image ECE on Fishyscapes is ~0.0004 for the checkpoints measured so
+# far -- 99.7% of pixels are obvious road/building that any model scores
+# near 0, and they swamp the average. Inside an 8px band around each
+# anomaly's edge the same checkpoints score ~0.23 (main's "both" checkpoint
+# and its L_calib fine-tune, 2026-09-26). Novelty 6 is about the
+# band, so the band is what L_calib trains on and what selection reads.
+#
+# Measured on main (2026-09-25, whole-image L_calib): beta=1 was a no-op
+# (L_calib ~0.25% of the loss), beta=50 made real ECE worse. Both were
+# chasing a whole-image number with nothing left in it to fix.
+CALIB_LOSS_REGION = "band"     # "band" | "whole" -- pixels L_calib is computed on
+CALIB_BAND_RADIUS_PX = 8       # same r as the headline boundary-ECE metric
+CALIB_SELECTION_REGION = "band"  # which val ECE picks the epoch
+BETA_CALIB = 1.0
+CALIB_EPOCHS = 5
+CALIB_LEARNING_RATE = 1e-5     # fine-tuning a converged checkpoint, not training
+
+# Weight on the edge-band mean-confidence anchor (calibrate._band_mean_anchor).
+# Measured with 400-step probes from phase2a_coco_run1 (val band-ECE, base
+# 0.1531): no anchor 0.2911 (worse), gamma 10 0.1768, gamma 100 0.1450.
+# 0 disables it and reproduces plain L_calib.
+CALIB_ANCHOR_WEIGHT = 100.0
+
+# Guards: a calibrated checkpoint is only saved if it improves val ECE over
+# the checkpoint it started from AND keeps detection within these limits.
+# AP is guarded as well as AUROC because AUROC saturates near 0.99 and would
+# let a real detection loss through unnoticed.
+CALIB_AUROC_DROP_LIMIT = 0.03
+CALIB_AP_DROP_LIMIT = 0.03
+
+# Degraded samples are the ones L_calib exists for (paper III-C): inputs
+# where staying confident is objectively wrong. Off for Phase 2a training
+# (DEGRADATION_PROB below), on for the fine-tune.
+CALIB_DEGRADATION_PROB = 0.3
+
+CHECKPOINT_3HEAD_CALIB = os.path.join(CHECKPOINT_DIR, "model_3head_calib_best.pth")
+
+# Temperature scaling baseline. T is fitted by minimising PLAIN binary NLL
+# (no pos_weight) with a bounded 1-D search, starting from nothing -- it is
+# a deterministic fit, not a few optimiser steps.
+#
+# The previous fit on main used the TRAINING loss (pos_weight=20) for 3 Adam
+# epochs from T=1.5. pos_weight=20 tells the fit that missing an anomaly
+# pixel is 20x worse than a false alarm, so it pulls scores upward on
+# purpose -- the opposite of calibration. Measured on the same checkpoint:
+# weighted fit T=2.86, ECE 0.01217; plain NLL T=1.50, ECE 0.00120. Every
+# "temp-scaled" number produced by that fit is invalid.
+#
+# Two baselines are fitted: on all val pixels ("whole"), and on the band only
+# ("band"). The band-fitted T is the fair opponent for a band-ECE claim --
+# L_calib beating a temperature that was never fitted on the band proves
+# nothing.
+TEMPERATURE_LOG_BOUNDS = (-3.0, 3.0)   # search log T, i.e. T in [0.05, 20]
+
 # ---------------------------------------------------------------------------
 # CutMix anomaly pasting
 # ---------------------------------------------------------------------------
@@ -226,6 +309,20 @@ CUTMIX_VALID_SURFACE_TRAINIDS = [0, 1]
 CUTMIX_HARMONIZE = True
 CUTMIX_EDGE_FEATHER_PX = 2
 
+# Paste realism, sampled uniformly per pasted object.
+#
+# Measured on phase2a_coco_run1 (2026-09-26): the model scores pasted COCO
+# objects 0.999 deep inside and 0.98 just inside the edge, but real
+# Fishyscapes anomalies only 0.69 and 0.50. Pastes are far easier than real
+# anomalies, so anything learned from them about how confident to be -- which
+# is exactly what L_calib learns -- does not transfer. Harder pastes are the
+# fix for that, not a tuning knob for L_calib.
+#
+# (0.6, 0.6) and (0.0, 0.0) are phase2a_coco_run1's settings (the extra
+# random draws mean the exact sequence of pastes still differs).
+CUTMIX_HARMONIZE_STRENGTH = (0.6, 0.6)   # fraction of the colour/exposure gap closed
+CUTMIX_OBJECT_BLUR_SIGMA = (0.0, 0.0)    # Gaussian blur radius on the pasted object, px
+
 # After a pasted object is scaled down, drop mask fragments smaller than this
 # many pixels and keep only what remains connected.
 #
@@ -247,8 +344,81 @@ CUTMIX_MIN_OBJECT_PIXELS = 32
 # on knowingly wrong targets.
 CUTMIX_SEG_IGNORE_INDEX = 255
 
-# L_total = L_seg + alpha * L_OOD. beta * L_calib is Phase 2b -- not here.
-ALPHA_OOD = 1.0
+# ---------------------------------------------------------------------------
+# Dual-mode inference (paper Section III-A)
+# ---------------------------------------------------------------------------
+# Continuous mode runs every frame: encoder once, heads once, no dropout.
+# Safety-triggered mode runs only when the anomaly score crosses the
+# threshold, and reuses the SAME cached encoder features while each head
+# runs MC_DROPOUT_PASSES times with dropout active.
+#
+# The latency claim depends entirely on that reuse. N passes over the full
+# B5 backbone costs >1000ms; N passes over a two-conv head costs almost
+# nothing. model.encode() exists so the reuse is explicit rather than
+# something a future edit can silently undo.
+MC_DROPOUT_PASSES = 10          # N in the paper: 10 per head -> 30 head passes
+
+# Peak per-image anomaly score at which continuous mode escalates to the
+# safety path. This is the knob that sets the latency/coverage tradeoff:
+# too low and the expensive path fires on ordinary driving (defeating the
+# dual-mode design), too high and real anomalies are missed.
+#
+# 0.5 is a placeholder, NOT a tuned value. The paper's own targets are
+# <5% trigger rate on normal frames and >90% on anomalous ones.
+#
+# Measured 2026-09-26 on phase2a_coco_run1 (check_dual_mode.py, 40 Cityscapes
+# val + 40 Fishyscapes test frames): NO threshold meets both. Peak-pixel
+# trigger at 0.5 fires on 60% of normal frames and 72.5% of anomalous ones;
+# the best area trigger (>= 10 px at >= 0.9) is 20% / 47.5%. Most ordinary
+# frames contain some patch the detector scores > 0.3, so this is a
+# frame-level detection limit, not a trigger-rule problem. Left at 0.5 until a
+# checkpoint meets the targets -- the dual-mode latency claim is not supported
+# by the current model.
+SAFETY_TRIGGER_THRESHOLD = 0.5
+
+# ---------------------------------------------------------------------------
+# Sensor degradation (paper Section III-C, second half)
+# ---------------------------------------------------------------------------
+# "random batches are subjected to severe visual degradations, including
+#  Gaussian noise, motion blur, and fog filters, actively penalizing the
+#  network via L_calib if it maintains high-confidence predictions on
+#  compromised inputs."
+#
+# DEFAULT 0.0 -- OFF for Phase 2a training -- and that is deliberate.
+#
+# Degraded samples exist to give L_calib something to push against: an input
+# where high confidence is objectively wrong. train.py has no L_calib term,
+# so switching this on there would corrupt a share of every batch with
+# nothing in the loss to make use of it -- most likely just a worse detector.
+#
+# The Phase 2b fine-tune (calibrate.py) turns it on through
+# CALIB_DEGRADATION_PROB above, which is where it belongs.
+DEGRADATION_PROB = 0.0
+
+# Severity ranges, sampled uniformly per application. "Severe" is the
+# paper's word -- a barely-visible corruption teaches the calibration loss
+# nothing, because staying confident through it is not actually an error.
+DEGRADATION_NOISE_SIGMA = (0.05, 0.20)    # additive Gaussian sigma, image in [0,1]
+DEGRADATION_BLUR_LENGTH = (5.0, 21.0)     # motion-blur kernel length in pixels
+DEGRADATION_FOG_STRENGTH = (0.35, 0.80)   # atmospheric scattering strength
+
+# L_total = L_seg + alpha * L_OOD_total. beta * L_calib is Phase 2b.
+#
+# The paper (Part-3) defines the per-head aggregation as a SUM:
+#     L_OOD_total = L_OOD(head1) + L_OOD(head2) + L_OOD(head3)
+# so "sum" is what matches the write-up. "mean" is kept only so an older run
+# can be reproduced exactly.
+OOD_HEAD_AGGREGATION = "sum"   # "sum" (paper) | "mean" (pre-2026-09-20 runs)
+
+# 1/3 with a 3-head sum is EXACTLY equivalent to 1.0 with a mean, which is
+# what produced the validated 0.9905 AUROC / 0.7917 AP run. Nothing about
+# training behaviour changes here -- the factor of three simply moved out of
+# the loss, where it was invisible, and into alpha, where it is stated.
+#
+# Tune alpha from here for Phase 2b. Raising it weights anomaly detection
+# over segmentation; the paper's own Phase 2a step is described as exactly
+# this knob.
+ALPHA_OOD = 1.0 / 3.0
 
 # Explicit positive-class weight for the OOD BCE term, replacing the old
 # per-batch inverse-frequency weight. Fixed rather than batch-dependent so

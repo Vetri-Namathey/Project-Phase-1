@@ -1,6 +1,9 @@
 """Experiment B: train TwinGuard with 3 independently-seeded OOD heads on
 Cityscapes + CutMix outlier exposure, evaluate on Fishyscapes each epoch,
-log to MLflow, save the best checkpoint by val AUROC.
+log to MLflow, save the best checkpoint by val AP (config.SELECTION_METRIC).
+
+TWINGUARD_NUM_HEADS=1 trains the single-head ablation instead (Novelty 5),
+written to config.CHECKPOINT_1HEAD.
 
 Fishyscapes is split into val/test halves. Checkpoint selection reads the
 val half only; the test half is reported. Training never touches either.
@@ -165,9 +168,19 @@ def main():
     np.random.seed(config.GLOBAL_SEED)
     device = get_device()
 
-    num_heads = 3
-    model = TwinGuardModel(num_ood_heads=num_heads,
-                           ood_seeds=config.OOD_HEAD_SEEDS_3HEAD).to(device)
+    # 3 = TwinGuard (Experiment B). 1 = the single-head ablation for the
+    # plan's Novelty-5 table; its one head uses seed 42, the same seed as head
+    # 0 of the 3-head model, so head count is the only thing that differs.
+    num_heads = int(os.environ.get("TWINGUARD_NUM_HEADS", "3"))
+    seeds = config.OOD_HEAD_SEEDS_3HEAD if num_heads == 3 else config.OOD_HEAD_SEEDS_1HEAD
+    assert len(seeds) == num_heads, f"no seed list configured for {num_heads} heads"
+    checkpoint_path = config.CHECKPOINT_3HEAD if num_heads == 3 else config.CHECKPOINT_1HEAD
+    # Same TOTAL weight on the OOD term as the 3-head recipe (sum of 3 heads x
+    # 1/3), i.e. alpha scales as 3/num_heads. The encoder is frozen and the seg
+    # head and OOD heads share no trainable parameters, so under AdamW this
+    # weight barely matters anyway -- it is kept equal for the record.
+    alpha = config.ALPHA_OOD * 3 / num_heads
+    model = TwinGuardModel(num_ood_heads=num_heads, ood_seeds=seeds).to(device)
     assert verify_encoder_frozen(model), "encoder must be fully frozen"
     assert verify_heads_independent(model), "OOD heads must be independently initialised"
     print(f"pre-flight: encoder frozen, heads independent, encoder={config.ENCODER_NAME}")
@@ -182,7 +195,9 @@ def main():
         persistent_workers=config.NUM_WORKERS > 0,
         pin_memory=device.type == "cuda")
     print(f"dataloader: {len(train_loader)} steps/epoch, "
-          f"num_workers={config.NUM_WORKERS}")
+          f"num_workers={config.NUM_WORKERS}, batch {config.BATCH_SIZE} x "
+          f"{config.GRAD_ACCUM_STEPS} accumulation = effective "
+          f"{config.BATCH_SIZE * config.GRAD_ACCUM_STEPS}")
 
     val_dataset = CityscapesDataset(split="val", normalize=True)
 
@@ -209,12 +224,14 @@ def main():
     selected_test = {}
     print(f"checkpoint selection: best val {metric_key} (val half only)")
 
-    with mlflow.start_run(run_name="experiment_b_3head"):
+    with mlflow.start_run(run_name=f"experiment_{num_heads}head"):
         mlflow.log_params({
             "num_ood_heads": num_heads,
-            "seeds": config.OOD_HEAD_SEEDS_3HEAD,
+            "seeds": seeds,
             "epochs": config.EPOCHS,
             "batch_size": config.BATCH_SIZE,
+            "grad_accum_steps": config.GRAD_ACCUM_STEPS,
+            "effective_batch_size": config.BATCH_SIZE * config.GRAD_ACCUM_STEPS,
             "num_workers": config.NUM_WORKERS,
             "lr": config.LEARNING_RATE,
             "ood_head_lr": ood_head_lr,
@@ -227,10 +244,14 @@ def main():
             "cutmix_max_objects": config.CUTMIX_MAX_OBJECTS,
             "cutmix_surface_constrained": True,
             "cutmix_harmonize": config.CUTMIX_HARMONIZE,
+            "cutmix_harmonize_strength": config.CUTMIX_HARMONIZE_STRENGTH,
+            "cutmix_object_blur_sigma": config.CUTMIX_OBJECT_BLUR_SIGMA,
+            "degradation_prob": config.DEGRADATION_PROB,
             "ood_pos_weight": config.OOD_POS_WEIGHT,
             "ood_loss": "bce_with_logits",
             "input_normalized": True,
-            "alpha_ood": config.ALPHA_OOD,
+            "alpha_ood": alpha,
+            "ood_head_aggregation": config.OOD_HEAD_AGGREGATION,
             "precalibration_auroc_gate": config.PRECALIBRATION_AUROC_GATE,
             "postcalibration_auroc_target": config.POSTCALIBRATION_AUROC_TARGET,
             "selection_metric": metric_key,
@@ -246,29 +267,37 @@ def main():
 
             running_loss, running_seg, running_ood = 0.0, 0.0, 0.0
             running_pos_rate = 0.0
+            running_degraded = 0.0
             t0 = time.time()
             n_steps = len(train_loader)
 
-            for step, (images, seg_labels, ood_target) in enumerate(train_loader):
+            accum = config.GRAD_ACCUM_STEPS
+            optimizer.zero_grad(set_to_none=True)
+            for step, (images, seg_labels, ood_target, degraded) in enumerate(train_loader):
                 images = images.to(device)
                 seg_labels = seg_labels.to(device)
                 ood_target = ood_target.to(device)
 
-                optimizer.zero_grad(set_to_none=True)
                 with amp_context(device):
                     out = model(images)
                     loss, l_seg, l_ood = compute_total_loss(
                         out["seg_logits"].float(), seg_labels,
-                        out["ood_logits"].float(), ood_target, seg_criterion)
+                        out["ood_logits"].float(), ood_target, seg_criterion,
+                        alpha=alpha)
                 # No GradScaler: bf16 keeps fp32's exponent range, so the
                 # underflow that fp16 needs scaling for does not occur.
-                loss.backward()
-                optimizer.step()
+                # Divided by accum so the summed gradient equals the mean over
+                # the effective batch, as one batch of that size would give.
+                (loss / accum).backward()
+                if (step + 1) % accum == 0 or step + 1 == n_steps:
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
 
                 running_loss += loss.item()
                 running_seg += l_seg.item()
                 running_ood += l_ood.item()
                 running_pos_rate += ood_target.mean().item()
+                running_degraded += degraded.mean().item()
 
                 if step % 100 == 0:
                     print(f"epoch {epoch + 1}/{config.EPOCHS} step {step}/{n_steps} "
@@ -313,6 +342,7 @@ def main():
                 "train_l_seg": running_seg / n_steps,
                 "train_l_ood": running_ood / n_steps,
                 "train_ood_pos_rate": running_pos_rate / n_steps,
+                "train_degraded_frac": running_degraded / n_steps,
                 "miou": miou,
                 **{f"val_{k}": v for k, v in val_metrics.items()},
                 **({f"test_{k}": v for k, v in test_metrics.items()}
@@ -328,13 +358,13 @@ def main():
                 best_val_score = val_metrics[metric_key]
                 best_epoch = epoch
                 selected_test = dict(test_metrics) if test_metrics else {}
-                torch.save(model.state_dict(), config.CHECKPOINT_3HEAD)
+                torch.save(model.state_dict(), checkpoint_path)
                 suffix = (f" (test {metric_key} {test_metrics[metric_key]:.4f})"
                           if test_metrics else "")
                 print(f"  -> new best VAL {metric_key} {best_val_score:.4f}"
                       f"{suffix}, checkpoint saved")
 
-        mlflow.log_artifact(config.CHECKPOINT_3HEAD)
+        mlflow.log_artifact(checkpoint_path)
         # The headline numbers must describe the checkpoint that was actually
         # saved, not whatever the last epoch happened to score. Logging only
         # last-epoch values means the summary table and the .pth file on disk

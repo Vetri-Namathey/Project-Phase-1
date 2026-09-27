@@ -38,17 +38,30 @@ from torch.utils.data import Dataset
 
 import config
 from data.anomaly_sources import build_anomaly_bank
+from data.degradations import apply_random_degradation
 from data.transforms import normalize_imagenet
 
 
 class CutMixAugmentedDataset(Dataset):
     """Wraps an UNNORMALISED CityscapesDataset and returns
-    (image, seg_label, ood_target) with the image normalised at the end."""
+    (image, seg_label, ood_target, degraded) with the image normalised at
+    the end.
 
-    def __init__(self, base_dataset, p=config.CUTMIX_PROB, anomaly_bank=None):
+    degradation_prob defaults to config.DEGRADATION_PROB (off for Phase 2a);
+    calibrate.py passes config.CALIB_DEGRADATION_PROB instead."""
+
+    def __init__(self, base_dataset, p=config.CUTMIX_PROB, anomaly_bank=None,
+                 degradation_prob=None):
         self.base = base_dataset
         self.p = p
+        self.degradation_prob = (config.DEGRADATION_PROB if degradation_prob is None
+                                 else degradation_prob)
         self.bank = anomaly_bank if anomaly_bank is not None else build_anomaly_bank()
+        # Each DataLoader worker forks with the same numpy global state, so a
+        # shared global RNG would make every worker apply the identical
+        # corruption sequence. Seeded per instance from the OS instead.
+        self._degradation_rng = np.random.default_rng()
+
         if getattr(base_dataset, "normalize", False):
             raise ValueError(
                 "CutMixAugmentedDataset needs an unnormalised base dataset -- "
@@ -91,7 +104,7 @@ class CutMixAugmentedDataset(Dataset):
         return int(ys[pick]) - half_h, int(xs[pick]) - half_w
 
     @staticmethod
-    def _harmonize(obj_rgb, obj_mask, dest_region):
+    def _harmonize(obj_rgb, obj_mask, dest_region, strength=0.6):
         """Match the object's per-channel mean/std to the destination region.
 
         Keeps the object's own texture and shape -- only its exposure and
@@ -110,7 +123,6 @@ class CutMixAugmentedDataset(Dataset):
         dest_mean, dest_std = dest.mean(0), dest.std(0) + 1e-5
 
         # Partial correction: full histogram matching washes the object out.
-        strength = 0.6
         gain = 1.0 + strength * (dest_std / src_std - 1.0)
         bias = strength * (dest_mean - src_mean)
 
@@ -197,7 +209,14 @@ class CutMixAugmentedDataset(Dataset):
 
         dest_region = image_np[py:py + new_h, px:px + new_w]
         if config.CUTMIX_HARMONIZE:
-            obj_rgb_r = self._harmonize(obj_rgb_r, obj_mask_r, dest_region)
+            strength = random.uniform(*config.CUTMIX_HARMONIZE_STRENGTH)
+            obj_rgb_r = self._harmonize(obj_rgb_r, obj_mask_r, dest_region, strength)
+        blur = random.uniform(*config.CUTMIX_OBJECT_BLUR_SIGMA)
+        if blur > 0.05:
+            # COCO photos are sharper than Cityscapes frames; a crisper object
+            # than its surroundings is a paste giveaway the heads can key on.
+            obj_rgb_r = np.asarray(Image.fromarray(obj_rgb_r).filter(
+                ImageFilter.GaussianBlur(radius=blur)))
 
         alpha = self._feather(obj_mask_r)[..., None]
         blended = dest_region.astype(np.float32) * (1.0 - alpha) + \
@@ -229,7 +248,25 @@ class CutMixAugmentedDataset(Dataset):
             for _ in range(n_objects):
                 self._paste_one(image_np, seg_np, ood_np)
 
+        # Sensor degradation (paper III-C, second half) goes AFTER compositing
+        # and BEFORE normalization -- that is where a real camera sits in the
+        # chain. The sensor degrades the whole scene including anything in it,
+        # so fog settles over the pasted object too.
+        #
+        # Labels are deliberately NOT touched: fog does not move the object,
+        # and the object underneath it is still anomalous. Only pixels change.
+        degraded = 0.0
+        if self.degradation_prob > 0 and random.random() < self.degradation_prob:
+            image_np, _ = apply_random_degradation(image_np, self._degradation_rng)
+            degraded = 1.0
+
         image_t = torch.from_numpy(image_np).permute(2, 0, 1).float() / 255.0
         image_t = normalize_imagenet(image_t)
 
-        return image_t, torch.from_numpy(seg_np).long(), torch.from_numpy(ood_np)
+        # The degraded flag rides along so Phase 2b can weight L_calib
+        # differently on corrupted vs clean inputs -- which is the entire
+        # reason degraded samples exist.
+        return (image_t,
+                torch.from_numpy(seg_np).long(),
+                torch.from_numpy(ood_np),
+                torch.tensor(degraded, dtype=torch.float32))

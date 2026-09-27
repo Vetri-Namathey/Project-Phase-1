@@ -6,6 +6,13 @@ The pod already exists, the datasets are already uploaded, and your friend's run
 
 `local$` = your Windows machine (PowerShell). `pod$` = the pod over SSH.
 
+> **Scope.** This guide covers getting code onto the pod and training there (Phase 2a,
+> Steps 0–9). Everything after training uses the same commands on the pod as on your own
+> machine: calibration, `eval_spatial.py`, the ablation, RoadAnomaly21. See README
+> "5. Run" and [LOCAL_GUIDE.md](LOCAL_GUIDE.md). An A40 fits the default batch 4, so the
+> `TWINGUARD_BATCH_SIZE` / `TWINGUARD_GRAD_ACCUM` laptop setting isn't needed here. The live
+> demo (`server.py` + `frontend/`) is meant for a local machine, not the pod.
+
 ---
 
 ## The five ways you could break your friend's run
@@ -422,9 +429,60 @@ What to watch:
 (.venv) pod$ grep "done in" train.log      # one line per epoch
 (.venv) pod$ python check_runs.py          # all runs, with the gates
 (.venv) pod$ python check_runs.py --trend  # per-epoch history
-(.venv) pod$ python check_collapse.py      # per-head mean/std on the checkpoint
+(.venv) pod$ python check_collapse.py      # per-head class separation on the checkpoint
 (.venv) pod$ python check_data.py          # CutMix composites + size stats
 ```
+
+### Picture outputs — generating them, and getting them onto your screen
+
+Two scripts write PNGs. The pod has no display, so the workflow is always the same: **generate on the pod, copy to your laptop, open locally.**
+
+| Script | Writes | Shows |
+|---|---|---|
+| `check_detections.py` | `check_detections.png` | What the model flags on real Fishyscapes photos — green boxes are ground truth, red are the model's own. This is the "does it box the actual object, or the sky?" evidence. |
+| `check_data.py` | `check_data_cutmix.png` | What training data looks like — pasted objects outlined on Cityscapes scenes, with size statistics against the real anomaly distribution. |
+
+**Generate (on the pod):**
+
+```
+(.venv) pod$ cd /workspace/twinguard_v2
+(.venv) pod$ python check_detections.py --n 6 --threshold 0.30
+(.venv) pod$ python check_data.py --n 6
+```
+
+`check_detections.py` needs a trained checkpoint at `checkpoints/model_3head_best.pth`, which `train.py` writes. It prints a table before saving:
+
+```
+frame                                     in-obj    bkgd     sep  %flagged  boxes  on-obj
+01_Hanns_Klemm_Str_45_000010_000200        0.373   0.000   0.373    0.251%      4   3/4
+04_Maurener_Weg_8_000008_000190            0.693   0.001   0.692    1.115%      4   1/4
+```
+
+`in-obj` is the mean score inside the real object, `bkgd` outside it, and `on-obj` counts how many drawn boxes actually overlap ground truth. That last column is the one a heatmap screenshot cannot tell you.
+
+**Copy to your laptop** (run in a LOCAL PowerShell, not the SSH session):
+
+```
+local$ cd "<your TwinGuard_CARLA folder>"
+local$ scp -P <PORT> -i ~/.ssh/id_ed25519 root@<IP>:/workspace/twinguard_v2/check_detections.png .
+local$ scp -P <PORT> -i ~/.ssh/id_ed25519 root@<IP>:/workspace/twinguard_v2/check_data_cutmix.png .
+```
+
+Then just open them — they land in your project folder. Both filenames match `check_*.png` in `.gitignore`, so they never get committed by accident.
+
+> **`--threshold` is the knob to experiment with**, and it is an absolute fused-score cutoff, not a percentile. Lower values box more (catching more real anomalies but more road paint with them); higher values box less. Do **not** switch it to "top N% of pixels" — at a 0.24% anomaly rate, the top 3% of a 2-megapixel frame is 63,000 pixels against a ~1,500-pixel object, so a percentile floods the image with background boxes and makes a working detector look broken. Use `check_dual_mode.py` (below) to pick a threshold from measurement rather than by eye.
+
+### Tuning the safety trigger — `check_dual_mode.py`
+
+`SAFETY_TRIGGER_THRESHOLD` in `config.py` ships as `0.5`, which is a **placeholder, not a measured value**. This script replaces it with evidence, and it needs a GPU for the latency numbers to mean anything:
+
+```
+(.venv) pod$ python check_dual_mode.py --n-images 40
+```
+
+It reports latency for both inference modes, then sweeps thresholds against the paper's own targets — under 5% of normal frames triggering the expensive path, over 90% of anomalous ones — and names the lowest threshold that meets both. Put that number in `config.py` with this output as the justification.
+
+If no threshold meets both targets, the script says so. That is a reportable finding about the dual-mode latency claim, not a script failure.
 
 ### MLflow UI — pick a free port, check first
 
@@ -460,6 +518,8 @@ Do this as soon as training finishes. **You do not control this pod** — if you
 local$ scp -P 40123 -i ~/.ssh/id_ed25519 root@194.xxx.xxx.xxx:/workspace/twinguard_v2/checkpoints/model_3head_best.pth .
 local$ scp -P 40123 -i ~/.ssh/id_ed25519 root@194.xxx.xxx.xxx:/workspace/twinguard_v2/train.log .
 local$ scp -P 40123 -i ~/.ssh/id_ed25519 root@194.xxx.xxx.xxx:/workspace/twinguard_v2/mlflow.db .
+local$ scp -P 40123 -i ~/.ssh/id_ed25519 root@194.xxx.xxx.xxx:/workspace/twinguard_v2/check_detections.png .
+local$ scp -P 40123 -i ~/.ssh/id_ed25519 root@194.xxx.xxx.xxx:/workspace/twinguard_v2/check_data_cutmix.png .
 ```
 
 `mlflow.db` is the entire experiment history in one file — every metric, every epoch, every parameter. View it locally:

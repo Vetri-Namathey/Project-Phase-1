@@ -1,9 +1,10 @@
-# Local requirements.
+# Local requirements (own machine). For a shared cloud pod use
+# requirements-runpod.txt instead -- it deliberately does not reinstall torch.
 #
-# The previous version pinned numpy<1.25 / scikit-learn<1.4 / scipy<1.11 for a
-# Python 3.8 machine. The current local environment is Python 3.12 and already
-# runs newer versions than those caps allowed, so the caps only produced
-# resolver conflicts. Removed.
+# Verified end to end (training, calibration, evaluation, demo) with Python 3.9,
+# torch 2.5.1 CUDA, transformers 4.49.0, numpy 1.23.5, mlflow 3.1.4 on Windows.
+# Install torch FIRST with the CUDA build for your GPU (https://pytorch.org),
+# then this file -- see LOCAL_GUIDE.md section 1.
 #
 # torchvision is deliberately absent: data/cityscapes_dataset.py used it for a
 # single to_tensor call, which numpy does directly.
@@ -33,7 +34,15 @@ transformers>=4.46.3,<5    # Two independent version constraints bite here, and
                            #
                            # preflight.py checks both combinations and prints the fix.
 mlflow>=2.16
-scikit-learn>=1.4      # validate_metrics.py only -- metrics.py does not import it
-numpy>=1.26
-pillow>=10.0
-scipy>=1.11            # generate_anomalies.py (connected-component labelling)
+scikit-learn>=1.0      # validate_metrics.py only -- metrics.py does not import it
+numpy>=1.21            # 1.23.5 verified; a torch built for numpy 1.x fails under 2.x
+pillow>=9.0
+scipy>=1.8             # metrics (distance transforms), CutMix, degradations, CARLA masks
+matplotlib>=3.8        # calibrate.py reliability diagram, server.py colormaps
+
+# Demo only (server.py). Not needed for training or evaluation. Verified with
+# fastapi 0.128.8, uvicorn 0.39.0, opencv 4.11.0.
+# The frontend needs Node.js >= 20.19 (checked with 22.12): see frontend/README.md.
+fastapi>=0.110
+uvicorn>=0.29
+opencv-python>=4.8

@@ -17,6 +17,8 @@ against sklearn including that case -- see validate_metrics.py.
 """
 
 import numpy as np
+from scipy.ndimage import binary_erosion, distance_transform_edt
+from scipy.ndimage import label as label_components
 
 import config
 
@@ -103,6 +105,39 @@ class ScoreHistogram:
             return 1.0
         return float(fp[reached[0]] / N)
 
+    def threshold_at_tpr(self, target_tpr=0.95):
+        """Fused-score threshold reaching target_tpr, same cutoff bin fpr_at_tpr
+        uses -- so a mask built as `scores >= threshold_at_tpr(t)` reproduces
+        fpr_at_tpr(t) when re-scored. Fixed on a val half, then applied
+        unchanged elsewhere (never tuned on the set it's evaluated against).
+        """
+        P = self.n_pos
+        if P == 0:
+            return float("nan")
+        tp = np.cumsum(self.pos[::-1]).astype(np.float64)
+        reached = np.nonzero((tp / P) >= target_tpr)[0]
+        if len(reached) == 0:
+            return 0.0
+        original_bin = self.n_bins - 1 - reached[0]
+        return float(original_bin / self.n_bins)
+
+    def threshold_at_max_f1(self):
+        """Score threshold maximising pixel-level F1 of `scores >= t`.
+
+        The operating point for UBQ. threshold_at_tpr(0.95) forces 95% recall,
+        which on Fishyscapes means flagging ~3% of every frame -- a region
+        that big has no meaningful outline to measure. Max-F1 balances missed
+        object pixels against false alarms instead. Fit on a val half and
+        applied unchanged elsewhere, like threshold_at_tpr.
+        """
+        if self.n_pos == 0:
+            return float("nan")
+        tp = np.cumsum(self.pos[::-1]).astype(np.float64)
+        fp = np.cumsum(self.neg[::-1]).astype(np.float64)
+        f1 = 2 * tp / (tp + fp + self.n_pos)
+        best = int(np.argmax(f1))
+        return float((self.n_bins - 1 - best) / self.n_bins)
+
     def ece(self, n_bins=15):
         """Expected Calibration Error over the accumulated histogram.
 
@@ -131,6 +166,31 @@ class ScoreHistogram:
             acc = self.pos[lo:hi].sum() / count
             ece += (count / total) * abs(conf - acc)
         return float(ece)
+
+    def reliability_curve(self, n_bins=15):
+        """Per-bin (confidence, accuracy, weight) for a reliability diagram.
+
+        Same binning as ece() above -- this is that computation's per-bin
+        detail instead of the single reduced scalar, so the diagram and the
+        reported ECE number can never silently disagree.
+        """
+        total = self.n_pos + self.n_neg
+        edges = np.linspace(0, self.n_bins, n_bins + 1).astype(np.int64)
+        confs, accs, weights = [], [], []
+        for i in range(n_bins):
+            lo, hi = edges[i], edges[i + 1]
+            count = self.pos[lo:hi].sum() + self.neg[lo:hi].sum()
+            if count == 0:
+                confs.append(float("nan"))
+                accs.append(float("nan"))
+                weights.append(0.0)
+                continue
+            conf = (self.conf_sum_pos[lo:hi].sum() + self.conf_sum_neg[lo:hi].sum()) / count
+            acc = self.pos[lo:hi].sum() / count
+            confs.append(float(conf))
+            accs.append(float(acc))
+            weights.append(float(count) / total if total else 0.0)
+        return np.array(confs), np.array(accs), np.array(weights)
 
     def summary(self, prefix=""):
         return {
@@ -202,3 +262,164 @@ class ConfusionMatrix:
     def miou(self):
         iou = self.per_class_iou()
         return float(np.nanmean(iou[~np.isnan(iou)])) if np.any(~np.isnan(iou)) else float("nan")
+
+
+# ---------------------------------------------------------------------------
+# Boundary-only ECE (Novelty 6) + UBQ shared primitives -- see PLAN.md's
+# "Boundary-only ECE (Novelty 6) + UBQ" section for the design this
+# implements. Plain functions, not a class/module, per this codebase's
+# convention of not adding abstractions beyond what's needed.
+# ---------------------------------------------------------------------------
+
+def gt_signed_distance(anomaly_mask):
+    """Euclidean distance (px) to the ground-truth anomaly edge, negative
+    inside the anomaly, positive outside. All-NaN if the mask is empty --
+    callers must check and skip that image.
+    """
+    mask = np.asarray(anomaly_mask, dtype=bool)
+    if not mask.any():
+        return np.full(mask.shape, np.nan, dtype=np.float32)
+    dist_outside = distance_transform_edt(~mask)
+    dist_inside = distance_transform_edt(mask)
+    signed = np.where(mask, -dist_inside, dist_outside)
+    return signed.astype(np.float32)
+
+
+def boundary_band(anomaly_mask, radius_px, valid=None, side="both"):
+    """Pixels within radius_px (Euclidean) of the ground-truth anomaly edge.
+
+    side="both" (default) is symmetric across the edge; "inner"/"outer"
+    restrict to just inside / just outside. `valid` (e.g. label != 255)
+    is ANDed in afterwards, matching evaluate_fused's existing convention.
+    """
+    mask = np.asarray(anomaly_mask, dtype=bool)
+    dist = gt_signed_distance(mask)
+    if np.isnan(dist).all():
+        band = np.zeros(mask.shape, dtype=bool)
+    elif side == "both":
+        band = np.abs(dist) <= radius_px
+    elif side == "inner":
+        band = (dist <= 0) & (dist >= -radius_px)
+    elif side == "outer":
+        band = (dist >= 0) & (dist <= radius_px)
+    else:
+        raise ValueError(f"unknown side {side!r}")
+    if valid is not None:
+        band = band & np.asarray(valid, dtype=bool)
+    return band
+
+
+def ubq(pred_mask, anomaly_mask, valid=None):
+    """Uncertainty Boundary Quality: directed-Hausdorff-style distances
+    between a binary predicted region and the ground-truth anomaly extent.
+
+    pred_to_gt_px: how far predicted pixels spill outside the true extent
+      (looseness). gt_to_pred_px: how much true extent the prediction
+      misses. pred_to_gt_p95 is the 95th percentile of the same distances,
+      since the max alone is decided by a single stray false-positive
+      pixel anywhere in the frame.
+
+    All distances come from EDT lookups, not
+    scipy.spatial.distance.directed_hausdorff -- that function is the
+    reference implementation validate_metrics.py's unit check compares
+    this against, not the production path (an O(H*W) EDT beats the
+    O(n*m) point-set search this would otherwise require per frame).
+
+    Returns NaN for every field if pred_mask or anomaly_mask is empty
+    (after `valid` is applied).
+    """
+    pred = np.asarray(pred_mask, dtype=bool)
+    gt = np.asarray(anomaly_mask, dtype=bool)
+    if valid is not None:
+        v = np.asarray(valid, dtype=bool)
+        pred = pred & v
+        gt = gt & v
+
+    nan_result = {
+        "pred_to_gt_px": float("nan"),
+        "gt_to_pred_px": float("nan"),
+        "pred_to_gt_p95": float("nan"),
+    }
+    if not pred.any() or not gt.any():
+        return nan_result
+
+    dist_from_gt = distance_transform_edt(~gt)
+    pred_to_gt_vals = dist_from_gt[pred]
+
+    dist_from_pred = distance_transform_edt(~pred)
+    gt_to_pred_vals = dist_from_pred[gt]
+
+    return {
+        "pred_to_gt_px": float(pred_to_gt_vals.max()),
+        "gt_to_pred_px": float(gt_to_pred_vals.max()),
+        "pred_to_gt_p95": float(np.percentile(pred_to_gt_vals, 95)),
+    }
+
+
+def _outline(mask):
+    """Pixels of `mask` that touch a pixel outside it (4-neighbourhood)."""
+    mask = np.asarray(mask, dtype=bool)
+    return mask & ~binary_erosion(mask, border_value=0)
+
+
+def ubq_local(pred_mask, anomaly_mask, valid=None, roi_px=32, tolerance_px=4):
+    """UBQ measured where boundary quality actually lives: object by object.
+
+    ubq() above takes the worst distance anywhere in the frame, so one false
+    alarm 1000px from any object decides the score -- that is a detection
+    error, not a boundary one. Measured on phase2a_coco_run1 it reported
+    ~1080px at every threshold, i.e. it measured nothing about outlines.
+
+    Each ground-truth object (connected component) is scored on its own,
+    using only predictions within roi_px of THAT object, so a missed second
+    object or a false alarm elsewhere cannot leak into an outline score:
+
+      detected     any prediction within roi_px of the object. Missed
+                   objects are counted (object recall), not scored.
+      spill_px     mean distance (px) of predicted pixels OUTSIDE the object
+                   -- "how far does the flagged region bleed past the edge?"
+      miss_px      mean distance (px) from object pixels to the nearest
+                   predicted pixel -- "how much of the object is left out?"
+      boundary_f1  standard boundary F-score at tolerance_px: share of each
+                   outline lying within tolerance_px of the other.
+
+    Returns (objects, far_fp_px, pred_px): a list of per-object dicts
+    ({"detected": False} for a missed one), the number of predicted pixels
+    further than roi_px from every object, and the total predicted pixels --
+    so callers can pool false alarms across images by pixel count.
+    """
+    pred = np.asarray(pred_mask, dtype=bool)
+    gt = np.asarray(anomaly_mask, dtype=bool)
+    if valid is not None:
+        v = np.asarray(valid, dtype=bool)
+        pred, gt = pred & v, gt & v
+    if not gt.any():
+        return [], int(pred.sum()), int(pred.sum())
+
+    far_fp_px = int((pred & (distance_transform_edt(~gt) > roi_px)).sum())
+    labelled, n = label_components(gt)
+    margin = roi_px + tolerance_px + 2
+    h, w = gt.shape
+    objects = []
+    for k in range(1, n + 1):
+        ys, xs = np.nonzero(labelled == k)
+        y0, y1 = max(ys.min() - margin, 0), min(ys.max() + margin + 1, h)
+        x0, x1 = max(xs.min() - margin, 0), min(xs.max() + margin + 1, w)
+        obj = labelled[y0:y1, x0:x1] == k
+        dist = distance_transform_edt(~obj)
+        local = pred[y0:y1, x0:x1] & (dist <= roi_px)
+        if not local.any():
+            objects.append({"detected": False})
+            continue
+        outside = local & ~gt[y0:y1, x0:x1]
+        obj_edge, pred_edge = _outline(obj), _outline(local)
+        precision = float((distance_transform_edt(~obj_edge)[pred_edge] <= tolerance_px).mean())
+        recall = float((distance_transform_edt(~pred_edge)[obj_edge] <= tolerance_px).mean())
+        objects.append({
+            "detected": True,
+            "spill_px": float(dist[outside].mean()) if outside.any() else 0.0,
+            "miss_px": float(distance_transform_edt(~local)[obj].mean()),
+            "boundary_f1": 0.0 if precision + recall == 0 else
+                           2 * precision * recall / (precision + recall),
+        })
+    return objects, far_fp_px, int(pred.sum())

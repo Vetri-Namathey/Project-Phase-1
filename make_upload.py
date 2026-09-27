@@ -22,12 +22,19 @@ INCLUDE_FILES = [
     "losses.py",
     "metrics.py",
     "train.py",
+    "calibrate.py",
+    "eval_spatial.py",
+    "eval_road_anomaly.py",
+    "check_uncertainty_split.py",
+    "check_ablation.py",
     "experiment_a.py",
     "preflight.py",
     "validate_metrics.py",
     "check_collapse.py",
     "check_data.py",
     "check_runs.py",
+    "check_dual_mode.py",
+    "check_detections.py",
     "download_coco_anomalies.py",
     "generate_anomalies.py",
     "requirements.txt",
@@ -39,7 +46,8 @@ INCLUDE_FILES = [
 ]
 INCLUDE_DIRS = ["data", "model"]
 SKIP_SUFFIXES = (".pyc",)
-SKIP_DIRS = {"__pycache__", "coco_objects", "_coco_download", "images", "masks"}
+SKIP_DIRS = {"__pycache__", "coco_objects", "_coco_download", "_excluded_objects",
+             "images", "masks"}
 
 
 def main():

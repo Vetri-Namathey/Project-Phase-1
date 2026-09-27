@@ -1,0 +1,4 @@
+# Shell scripts run on the Linux pod. A Windows checkout converts them to
+# CRLF by default, and bash then fails on the stray \r ("$'\r': command not
+# found"). Force LF for them regardless of the machine they are checked out on.
+*.sh text eol=lf

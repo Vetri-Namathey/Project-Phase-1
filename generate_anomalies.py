@@ -1,3 +1,27 @@
+"""Render CARLA anomaly objects and their pixel masks (the "carla" anomaly source).
+
+Needs a running CARLA server and the `carla` Python client on that machine
+(not in requirements.txt). For each frame it spawns a static prop in front of
+the ego camera, and takes the object mask as every pixel whose semantic class
+changed against a baseline frame without the prop (largest connected blob
+kept). Writes data/images/anomaly_NNN.png and data/masks/anomaly_mask_NNN.npy,
+which data/anomaly_sources.py reads when config.ANOMALY_SOURCE = "carla".
+
+KNOWN BUG -- do not train on this script's current output (measured
+2026-09-26, see runs/RESULTS.md and README "Known caveats"):
+  * the world runs with synchronous_mode = False, and the RGB and semantic
+    frames are taken from two independent queues without matching their
+    frame IDs;
+  * the prop is spawned with physics on and captured after a fixed
+    sleep(1.0), so it can still be falling or settling.
+The RGB image and the mask can therefore come from different moments: 23 of
+the 45 existing frames have masks that do not line up with the object.
+
+Fix before re-rendering: enable synchronous mode and advance with
+world.tick(); keep only the RGB/semantic pair whose `.frame` numbers match;
+let the object settle (or disable physics) before the captured tick.
+"""
+
 import argparse
 import carla
 import random
