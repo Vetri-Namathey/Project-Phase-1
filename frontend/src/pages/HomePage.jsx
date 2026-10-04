@@ -27,27 +27,44 @@ const FEATURES = [
 ]
 
 // Real numbers from PLAN.md's 2026-09-25 L_calib run against the verified
-// AUROC=0.9920 checkpoint. Honest finding, not a clean win: whole-image ECE
-// barely moves because Fishyscapes' 0.28% positive rate makes it dominated by
-// trivial true-negatives regardless of what happens on the hard pixels.
+// AUROC=0.9920 checkpoint, from eval_spatial.py (PLAN.md "Calibration — final
+// result"). Fishyscapes test half; every calibrator fit on the val half only.
+// bece = ECE restricted to pixels within 8px of a true anomaly edge.
 const CALIB_MODELS = [
   {
     id: 'raw',
     label: 'Raw',
     sub: 'Sigmoid, no calibration',
-    auroc: 0.9920, ap: 0.6215, fpr95: 0.0290, ece: 0.0004,
+    auroc: 0.9920, ap: 0.6215, ece: 0.0004, bece: 0.2273,
+    note: 'Near-perfect whole-image ECE (0.0004) hides a boundary ECE of 0.2273, about 570× worse. With only 0.28% of pixels anomalous, whole-image ECE is dominated by easy background. At object edges the model is under-confident: true-anomaly edge pixels average a score of 0.36.',
   },
   {
     id: 'temp',
-    label: 'Temp-scaled',
-    sub: 'Post-hoc scalar T, per head',
-    auroc: 0.9924, ap: 0.6193, fpr95: 0.0287, ece: 0.0020,
+    label: 'T = 1.71',
+    sub: 'Temperature fit on the whole image',
+    auroc: 0.9924, ap: 0.6193, ece: 0.0020, bece: 0.1845,
+    note: 'Standard temperature scaling, fit on held-out real images. It improves the boundary a little by pulling all scores toward 0.5. That also raises scores on normal pixels next to objects.',
+  },
+  {
+    id: 'mixed',
+    label: 'T = 3.15',
+    sub: 'Temperature fit 50/50 on whole image + boundary',
+    auroc: 0.9925, ap: 0.6177, ece: 0.0177, bece: 0.1277,
+    note: 'The compromise point. A version that varied T with head disagreement did no better than this single temperature (tested against a pre-registered control). Disagreement marks where the edges are, but not which way to correct them.',
+  },
+  {
+    id: 'band',
+    label: 'T = 4.36',
+    sub: 'Temperature fit on boundary pixels only',
+    auroc: 0.9925, ap: 0.6173, ece: 0.0420, bece: 0.0942,
+    note: 'Halves boundary ECE compared with T = 1.71, but whole-image ECE gets 20× worse. The whole image wants T ≈ 1.7 and the edges want T ≈ 4.4. No single temperature fixes both. That trade-off is the finding.',
   },
   {
     id: 'calib',
     label: 'L_calib',
-    sub: 'Joint fine-tune, soft-ECE surrogate',
-    auroc: 0.9924, ap: 0.6024, fpr95: 0.0293, ece: 0.0005,
+    sub: 'Joint fine-tune on CutMix pastes, soft-ECE surrogate',
+    auroc: 0.9924, ap: 0.6024, ece: 0.0005, bece: 0.2396,
+    note: 'Calibration learned from training pastes transfers the wrong correction. It lowered edge scores, which helps on training-like CARLA objects but makes real Fishyscapes edges more under-confident (worse than raw, CI excludes 0). Calibration has to be fit on held-out real data.',
   },
 ]
 
@@ -135,22 +152,22 @@ function PulseGrid() {
 }
 
 function CalibrationPanel() {
-  const [active, setActive] = useState('calib')
+  const [active, setActive] = useState('band')
   const model = CALIB_MODELS.find((m) => m.id === active)
   const raw = CALIB_MODELS[0]
 
   const rows = [
     { label: 'AUROC', key: 'auroc', decimals: 4, higherBetter: true },
     { label: 'AP', key: 'ap', decimals: 4, higherBetter: true },
-    { label: 'FPR@95', key: 'fpr95', decimals: 4, higherBetter: false },
-    { label: 'ECE', key: 'ece', decimals: 4, higherBetter: false },
+    { label: 'ECE (whole image)', key: 'ece', decimals: 4, higherBetter: false },
+    { label: 'ECE (object edges, r=8)', key: 'bece', decimals: 4, higherBetter: false },
   ]
 
   return (
     <section className="calib-block">
       <div className="stage-head">
-        <h2>Calibration — the honest result</h2>
-        <p>Phase 2b, run 2026-09-25 on the verified AUROC=0.9920 checkpoint. Toggle a model to compare it against raw.</p>
+        <h2>Calibration — the edges tell a different story</h2>
+        <p>Fishyscapes test half, verified AUROC=0.9920 checkpoint. Every calibrator is fit on held-out real images. Pick one to compare against raw.</p>
       </div>
 
       <div className="calib-tabs" role="tablist">
@@ -199,11 +216,7 @@ function CalibrationPanel() {
             })}
           </tbody>
         </table>
-        <p className="calib-note">
-          {active === 'raw' && 'The unmodified checkpoint — no post-hoc or joint-trained calibration applied.'}
-          {active === 'temp' && 'A single scalar temperature fit per head. It moves AUROC up fractionally but makes whole-image ECE worse (0.0004 → 0.0020) — calibration and discrimination trade off in different directions than expected.'}
-          {active === 'calib' && 'Joint fine-tune against a differentiable ECE surrogate (SoftECELoss), selected on validation ECE. Whole-image ECE (0.0005) is barely different from raw\'s already-tiny 0.0004 — Fishyscapes\' 0.28% positive rate means whole-image ECE is dominated by trivial true negatives, so it cannot separate these three models. Boundary-only ECE + UBQ (in progress) is the metric that could.'}
-        </p>
+        <p className="calib-note">{model.note}</p>
       </div>
     </section>
   )

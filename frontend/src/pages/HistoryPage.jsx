@@ -41,12 +41,13 @@ export default function HistoryPage() {
 
       <div className="report-card">
         <div className="report-head">
-          <h2>Phase 2b — calibration (L_calib), run 2026-09-25</h2>
+          <h2>Phase 2b — calibration, whole image vs object edges</h2>
           <span className="report-best mono accent-text">against AUROC=0.9920</span>
         </div>
         <p className="report-config">
-          Joint fine-tune of the verified checkpoint with a differentiable soft-ECE surrogate
-          (SoftECELoss), against raw and post-hoc temperature scaling. Fishyscapes test half.
+          L_calib fine-tune run 2026-09-25; edge-ECE study 2026-09-26 to 2026-10-04 (eval_spatial.py).
+          Fishyscapes test half, all calibrators fit on the val half. The reliability diagram
+          below is whole-image only (raw, temp T=1.71, L_calib).
         </p>
         <img
           src="/static/calibration_reliability.png"
@@ -54,19 +55,23 @@ export default function HistoryPage() {
           style={{ width: '100%', maxWidth: 520, display: 'block', border: '2px solid var(--line)', marginBottom: 16 }}
         />
         <table className="data-table">
-          <thead><tr><th>Model</th><th>AUROC</th><th>AP</th><th>FPR@95</th><th>ECE</th></tr></thead>
+          <thead><tr><th>Model</th><th>AUROC</th><th>AP</th><th>ECE (whole)</th><th>ECE (edges, r=8)</th></tr></thead>
           <tbody>
-            <tr><td className="mono">Raw</td><td className="mono">0.9920</td><td className="mono">0.6215</td><td className="mono">0.0290</td><td className="mono">0.0004</td></tr>
-            <tr><td className="mono">Temp-scaled</td><td className="mono">0.9924</td><td className="mono">0.6193</td><td className="mono">0.0287</td><td className="mono">0.0020</td></tr>
-            <tr className="best-row"><td className="mono">L_calib</td><td className="mono">0.9924</td><td className="mono">0.6024</td><td className="mono">0.0293</td><td className="mono">0.0005</td></tr>
+            <tr><td className="mono">Raw</td><td className="mono">0.9920</td><td className="mono">0.6215</td><td className="mono">0.0004</td><td className="mono">0.2273</td></tr>
+            <tr><td className="mono">Temp T=1.71 (whole-image fit)</td><td className="mono">0.9924</td><td className="mono">0.6193</td><td className="mono">0.0020</td><td className="mono">0.1845</td></tr>
+            <tr><td className="mono">Temp T=3.15 (50/50 fit)</td><td className="mono">0.9925</td><td className="mono">0.6177</td><td className="mono">0.0177</td><td className="mono">0.1277</td></tr>
+            <tr className="best-row"><td className="mono">Temp T=4.36 (edge fit)</td><td className="mono">0.9925</td><td className="mono">0.6173</td><td className="mono">0.0420</td><td className="mono">0.0942</td></tr>
+            <tr><td className="mono">T(d), head disagreement</td><td className="mono">0.9923</td><td className="mono">0.6106</td><td className="mono">0.0193</td><td className="mono">0.1312</td></tr>
+            <tr><td className="mono">L_calib (CutMix-trained)</td><td className="mono">0.9924</td><td className="mono">0.6024</td><td className="mono">0.0005</td><td className="mono">0.2396</td></tr>
           </tbody>
         </table>
         <p className="calib-note" style={{ marginTop: 14 }}>
-          Honest read, not a clean win: temperature scaling made whole-image ECE <em>worse</em>
-          (0.0004 → 0.0020), and L_calib's ECE (0.0005) is barely different from raw's already-tiny
-          0.0004. At Fishyscapes' 0.28% positive-pixel rate, whole-image ECE is dominated by trivial
-          true negatives and can't separate these three models — boundary-only ECE and UBQ
-          (in progress, see PLAN.md) are the metrics that could.
+          Whole-image ECE hides the problem: raw scores 0.0004 there but 0.2273 at object edges,
+          where the model is under-confident. No single temperature fixes both. Fitting to the
+          edges (T=4.36) halves edge ECE but makes whole-image ECE 20× worse. A temperature that
+          varies with head disagreement did no better than one fixed temperature (pre-registered
+          control). L_calib, learned on training pastes, is worse than raw at the edges. Every
+          comparison is a paired bootstrap over the 50 test images; full numbers in PLAN.md.
         </p>
       </div>
 

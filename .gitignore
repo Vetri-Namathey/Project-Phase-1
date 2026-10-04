@@ -69,6 +69,14 @@ frontend/node_modules/
 frontend/dist/
 static_react/
 
+# CARLA route recordings from record_route.py (RGB frames + masks + poses,
+# hundreds of MB per route). Deterministic from --seed, so re-record rather
+# than commit. Default output names are video_pilot / video_<name>.
+/video_*/
+
+# Rendered video / per-frame panel outputs, if written outside static/generated/
+*.mp4
+
 # Local environment / secrets, if any ever get created
 .env
 .env.local
