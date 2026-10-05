@@ -172,6 +172,120 @@ interiors and disagree at outlines, which is the Phase-2b edge finding made visi
 Laptop latency (RTX 3050 Ti, bf16): continuous ≈ 177 ms, safety ≈ 500 ms. Not the paper's
 deployment targets (<35 / <100 ms), which need a deployment GPU to test.
 
+## Part D: explainability (X1–X4) and the `record_route.py` port (2026-10-05)
+
+Built from the plan a teammate wrote on `main`; code, fills, statistics and tests are this
+branch's own. `explain.py` (full study ~13 min, fp32), `validate_explain.py` (all checks pass),
+logs `runs/explain_run2.log` (final) and `runs/explain_run1.log` (first run, flawed fill, kept as
+a record). Data: 78 real objects in 45 Fishyscapes test images (≥12 px at 1024×512), of which
+**39 are detected** (peak ≥ 0.536, the val-fitted threshold at this resolution); 61 pasted objects
+in 30 CutMix composites (60 detected). Real objects are smaller: median 155 px vs 360 px, so the
+real-vs-paste comparisons are also repeated size-matched (100–500 px: 18 real, 19 paste).
+Confidence intervals resample whole images.
+
+### The fill problem (the main method lesson)
+
+Every removal needs something to paint with, and the fill can itself look anomalous. The
+plan's advice (compare two fills, add a control) was necessary and not sufficient. Measured on 58
+clean-road controls and 30 pasted objects:
+
+| fill | false detections on clean road | pasted objects removed (mean score left in the object) |
+|---|---|---|
+| hard road-patch copy | 55% | 47% lost (0.094) |
+| Poisson-blended patch | 10% | **0% lost (0.922)**: leaves a flat grey ghost of the object |
+| Telea inpainting | 22% | 73% (0.120) |
+| **feathered road patch (σ=2), used** | 22% | 80% (0.041) |
+
+The Poisson blend looked the cleanest only because it removed nothing; the first full run
+(`explain_run1.log`) used it and reported "pasted objects stay detected after removal",
+which was wrong (only 1.7% lost, because the patch had left a ghost). With the feathered patch the two fills agree: whole-object removal loses
+**54% vs 51%** of real detections and **70% vs 68%** of pasted ones. Even so, the fill alone makes the model fire on
+10–27% of clean-road patches (by edit type), so "detection lost" is a **lower bound**, and the
+"excess over fill artefact" column (post-edit peak minus the same edit's peak on clean road)
+is the cleaner number.
+
+### X1 counterfactual removal (detected objects; Telea; neighbourhood = object + 4 px)
+
+| edit | real: peak before→after | real: detection lost [95% CI] | paste: detection lost [95% CI] | real: excess over artefact |
+|---|---|---|---|---|
+| whole object | 0.89 → 0.46 | **54%** [38, 70] | **70%** [60, 81] | +0.15 [+0.03, +0.27] |
+| edge band only (core kept) | 0.89 → 0.81 | 18% [5, 33] | 28% [16, 41] | +0.59 |
+| core only (edge band kept) | 0.94 → 0.96 | **0%** [0, 0] | 0% [0, 0] | +0.81 |
+| surroundings (4–20 px ring) | 0.89 → 0.96 | 3% [0, 8] | 0% [0, 0] | n/a (no control) |
+| edge band blurred | 0.89 → 0.87 | 13% [4, 25] | 12% [3, 21] | +0.63 |
+
+What it shows:
+- **The evidence is spread out.** Repainting the edge band while keeping the core, or the core while keeping the
+  edge band, rarely removes the detection (0–28%). Only repainting the whole object does (about half of real, 70% of pasted objects).
+  Paired peak drop, edge band − core: +0.012 [−0.014, +0.058] real, +0.039 [0.000, +0.103] paste, so no
+  significant difference. The hypothesis "the model keys on the pasted edge" is **not supported**; neither is "content only".
+- **Edge sharpness barely matters:** blurring the band loses 13% (real) vs 12% (paste); size-matched real−paste +0.020 [−0.080, +0.153].
+- **The model does not need the surroundings:** repainting a ring 4–20 px around the object does not lower its score (it rises
+  slightly, 0.89 → 0.96; the fill artefact is not controlled for this edit, so read it as "no dependence").
+- **Pasted objects are fully removable, real ones leave a residue.** After whole-object removal, a pasted object is at the
+  fill-artefact level (excess +0.05 [−0.05, +0.14] Telea, +0.03 [−0.09, +0.15] patch); a real object keeps +0.15 [+0.03, +0.27] /
+  +0.17 [0.00, +0.34] above it. What the residue is (shadow, contact darkening, labels that under-cover the object) was **not tested**.
+- Size-matched real−paste peak drop for whole-object removal: −0.289 [−0.470, −0.090] Telea, −0.177 [−0.426, +0.092] patch.
+
+### X2 which encoder stage carries the score (detected objects)
+
+| | stage 1 (1/4) | stage 2 (1/8) | stage 3 (1/16) | stage 4 (1/32) |
+|---|---|---|---|---|
+| gradient share, real | 12% | 26% | 30% | 32% |
+| gradient share, paste | 17% | 31% | 26% | 25% |
+| real − paste, size-matched (pts) | −5.9 [−7.4, −4.7] | −6.5 [−8.8, −4.4] | +5.4 [+3.5, +7.5] | +7.0 [+4.4, +9.6] |
+| **removal**: score cut when this stage's features at the object are replaced by their surroundings, real | **34%** [24, 43] | **56%** [47, 66] | **64%** [51, 76] | 16% [5, 28] |
+| removal, paste | 11% [7, 14] | 33% [26, 41] | 10% [6, 15] | 0% [−1, 0] |
+| removal, real − paste, size-matched (pts) | +28.7 [18, 39] | +31.4 [14, 48] | +44.4 [22, 67] | −0.6 [−8, +5] |
+
+- Gradient share and removal **disagree about stage 4**: it carries 25–32% of the gradient but removing its evidence barely changes
+  the score (real 16%, paste 0%). The removal result is the faithful one: the evidence lives in the mid-scale stages 2–3.
+- Real objects depend far more on each of stages 1–3 than pasted ones (size-matched +29 to +44 pts): a pasted object's score
+  (saturated near 1.0) survives losing any single stage, a real object's does not. This fits the Phase 2b finding that the model is
+  ~99% sure of pastes and only 50–69% sure of real objects, but is a consistency check, not proof of that explanation.
+- A tested hypothesis that did **not** hold: pasted objects relying on the finest stage (the "paste artefact" shortcut). Stage 1 matters *less* for pastes (11% vs 34%).
+- A first ablation (whole stage replaced by its global average) was rejected: it feeds the heads impossible features everywhere and
+  raised scores up to 50×. The kept ablation is local to the object.
+- Maps: stages 1–3 peak within about a cell of the object (mean offset −8 to +2 px); stage 4's median offset is 27 px, inside its 32 px cell,
+  larger than most objects. Read the stage-4 map as "in this neighbourhood".
+
+### X3 epistemic / aleatoric split of the 3 heads (real test objects, bits)
+
+| region | mean score | total | aleatoric | epistemic (head disagreement) | epistemic share |
+|---|---|---|---|---|---|
+| object core | 0.708 | 0.516 | 0.501 | 0.0153 | 3.0% |
+| inner edge band | 0.445 | 0.530 | 0.516 | 0.0148 | 2.8% |
+| outer edge band | 0.102 | 0.256 | 0.249 | 0.0069 | 2.7% |
+| background | 0.0009 | 0.0037 | 0.0036 | 0.0001 | 2.9% |
+
+- Almost all uncertainty is "aleatoric" (the heads agree that it is uncertain); disagreement is ~3% everywhere. Its *location* signal is
+  strong (epistemic ≈ 150× higher in the object core and inner edge than in the background, 2× higher inside the edge than just outside it).
+- Mean uncertainty inside the ±4 px edge band by outcome: TP 0.57, **FN 0.50**, FP 0.74, TN 0.23 (pixels: TP 10,390; FN 14,276; FP 1,762; TN 28,260).
+  The dominant edge error is the **miss** (8× more than false alarms), and misses look about as certain as hits.
+- AUROC for "this edge pixel is wrong": total 0.665, aleatoric 0.663, epistemic 0.653, head spread 0.662, versus 0.638 for the naive
+  "near the threshold" baseline. For telling the direction of an error (miss vs false alarm): 0.32–0.41 (below 0.5 means high uncertainty
+  → more likely a false alarm). So uncertainty cannot flag the edge under-confidence found in Phase 2b. The 3 heads share one frozen
+  encoder, so their disagreement understates true epistemic uncertainty.
+
+### Limits
+
+One checkpoint, 39 detected real objects, fp32 at 1024×512, edits at the model's input size. Edge band = 4 px there (= the r = 8 px band at
+label resolution). The feathered fill's skirt bleeds ≤2 px into a kept core. Objects the model does not detect (39 of 78) are excluded from
+the removal statistics by construction. Pasted objects come from the training bank. The label masks come from nearest-neighbour downscaling.
+
+### `record_route.py` (ported from `main`, CARLA recording with synchronous capture)
+
+Logic verified against a simulated CARLA (10 checks: tick sequence, stale-frame draining, BGRA decoding, mask = the object rendered in the
+same frame's RGB for all 6 frames, files, cleanup). It has **not** been run against the real simulator (no CARLA on this laptop); its
+first real run should be a small pilot whose frames are looked at. It is the intended fix for the `generate_anomalies.py` sync bug.
+
+### Demo panel (X4)
+
+`python explain.py --checkpoint <ckpt> --demo` writes `static/generated/explain/`; `/demo` shows the aggregate removal table and, per frame, the
+before/after figure with the repaint outline and the stage bars. Until generated, the page says "pending". Rendered and inspected in headless
+Edge; `/api/explain` serves 6 frames and 66 assets. A bug found by that end-to-end test (a bare `NaN` in the JSON made the endpoint fail) is fixed
+at the source and covered by a test.
+
 ## Reference points (not run here)
 
 | Checkpoint | AUROC | AP | FPR@95 | ECE | band-ECE r=8 | Note |

@@ -449,6 +449,22 @@ def get_training_samples():
     return _training_samples
 
 
+@app.get("/api/explain")
+def get_explain():
+    """Explainability figures + aggregate numbers, written by explain.py
+    (`python explain.py --checkpoint <ckpt> --demo`). Not built by the server:
+    they take a few minutes of GPU and are produced on demand. Until they exist
+    the page shows a clearly labelled "pending" notice."""
+    path = os.path.join(GENERATED_DIR, "explain", "explain.json")
+    if not os.path.exists(path):
+        return {"status": "pending",
+                "how": "python explain.py --checkpoint <ckpt>   then   python explain.py --checkpoint <ckpt> --demo"}
+    with open(path) as f:
+        # parse_constant: an older explain.json may hold a bare NaN, which is
+        # not valid JSON and which FastAPI refuses to send. Serve it as null.
+        return json.load(f, parse_constant=lambda _: None)
+
+
 os.makedirs(GENERATED_DIR, exist_ok=True)   # StaticFiles refuses a missing directory
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 if os.path.isdir(os.path.join(REACT_DIR, "assets")):

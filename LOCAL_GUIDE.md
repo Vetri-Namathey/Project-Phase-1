@@ -557,6 +557,48 @@ Notes:
 
 ---
 
+## 9d. Explainability: *why* does it flag an object? (evaluation only)
+
+`explain.py` answers "what is the model actually looking at?" by editing the picture and
+re-running the model. No training; ~15 min on the reference laptop, all in fp32.
+
+```
+python validate_explain.py                    # first: the building blocks are correct (~1 min)
+python explain.py --checkpoint runs\phase2a_coco_run1\model_3head_best.pth       # the full study
+python explain.py --checkpoint runs\phase2a_coco_run1\model_3head_best.pth --demo   # figures for /demo (needs server.py run once)
+```
+
+| Step | What it does | Read it as |
+|---|---|---|
+| **X1 removal** | Repaints one part of an object (the object, its edge band, its core, its surroundings, or just blurs the band), re-runs the model, measures the peak score near the object | A big drop = the model relies on that part. "Detection lost" is the share of objects the model no longer flags. |
+| **X1 controls** | Applies the same edit to a patch of clean road | If the control itself raises the score, the repaint is leaving an artefact. Judge a removal result *against* its control. |
+| **X2 stages** | Which of the encoder's 4 stages (fine → coarse) the score depends on: gradient × activation, plus a faithful check that removes the object's features at one stage | Gradient share = where the score is sensitive; the removal column = what it needs. When they differ, trust the removal. |
+| **X3 uncertainty** | Splits the 3 heads' uncertainty into disagreement between heads (epistemic) and each head's own (aleatoric) by region | Whether the signal says anything about *where* or *which direction* the edge is wrong. |
+
+Everything is done twice: on **real** Fishyscapes test objects and on **pasted** CutMix objects
+(what the heads trained on). Comparing the two shows whether the model treats pastes
+differently. Confidence intervals resample whole *images*, because objects in one image are
+not independent.
+
+Outputs: the printed report (save it with `| Tee-Object runs\explain_run1.log`),
+`runs\explain\summary.json`, `runs\explain\x1_objects.csv` (one row per object per edit).
+`--demo` writes `static\generated\explain\`, which the **Detection Demo** page shows; until
+you run it, that page says "pending" in plain words. The numbers are copied into
+`runs\RESULTS.md`.
+
+Design choices worth knowing (each measured, see RESULTS.md Part D):
+- A plain copied road patch fires a false detection on clean road 71% of the time, so the
+  patch fill is **Poisson-blended** (0% on the same control).
+- Replacing a whole encoder stage by its global average was rejected: it makes the heads
+  see impossible features everywhere. The ablation is *local* to the object.
+- Edits are made at the model's 1024×512 input size; "edge band" = 4 px there, the same
+  physical band as the r = 8 px edge-ECE at the 2048×1024 labels.
+
+`record_route.py` (CARLA recording) is unrelated to this and needs a machine with the CARLA
+simulator; see its header and the README.
+
+---
+
 ## 10. MLflow — every number from every run
 
 ```

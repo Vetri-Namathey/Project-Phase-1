@@ -51,6 +51,11 @@ function FindingsCard() {
           <tr><td>Separates bad camera from novel object?</td><td className="mono">both signals ×28–31 under noise</td><td>No (finding)</td></tr>
           <tr><td>Safety trigger meets &lt;5% / &gt;90%?</td><td className="mono">best: 20% false / 47.5% caught</td><td>No, not yet</td></tr>
           <tr><td>Generalises to RoadAnomaly21?</td><td className="mono">AUROC 0.721 vs baseline 0.871 (10 labelled images)</td><td>No: large objects fail</td></tr>
+          <tr><td>Which part of an object keeps it detected?</td><td className="mono">repaint whole object: detection lost for 54% of real / 70% of pasted · edge band only: 18% / 28% · core only: 0% / 0%</td><td>Spread out: no single part is necessary</td></tr>
+          <tr><td>Does it need the surroundings?</td><td className="mono">repainting a 4–20px ring around the object: score does not drop (0.89 → 0.96)</td><td>No: detection is local</td></tr>
+          <tr><td>Which encoder stage carries the evidence?</td><td className="mono">removing one stage&apos;s features at a real object cuts its score 34% / 56% / 64% / 16% (stages 1→4)</td><td>Mid-scale stages 2–3, not stage 4 (despite 32% of the gradient)</td></tr>
+          <tr><td>Do pasted objects get detected differently?</td><td className="mono">pasted objects are removable to the fill-artefact level; one-stage removal cuts them only 11% / 33% / 10% / 0%</td><td>More redundant (score saturated near 1.0)</td></tr>
+          <tr><td>Does head uncertainty flag edge errors?</td><td className="mono">AUROC 0.65–0.67 for &quot;this edge pixel is wrong&quot; (naive baseline 0.64); head disagreement is 3% of total uncertainty</td><td>Weak; misses look as certain as hits</td></tr>
         </tbody>
       </table>
       <p className="calib-note" style={{ marginTop: 14 }}>

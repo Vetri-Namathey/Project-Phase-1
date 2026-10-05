@@ -54,6 +54,8 @@ All local results, including the ones that didn't work, are in [runs/RESULTS.md]
 
 **Why the disagreement number matters.** The architecture's premise is that three independently-initialised heads disagreeing is a real signal of "the model does not know." Measured alone, with no other information, that disagreement detects anomalies at 0.9845 AUROC. It is evidence, not an assumption. The 1-head ablation shows what it buys: one head detects just as well, but gets a comparable uncertainty signal (MC-Dropout, 0.968) only by running 10 extra passes. Three heads give it for free in the single continuous-mode pass.
 
+**Why does it flag an object? (`explain.py`, details in `runs/RESULTS.md` Part D).** Repainting a detected real object as road removes the detection for about half of them (54%; 70% for pasted training objects). Repainting only its edge band or only its core rarely does (18% / 0%), so the evidence is spread out: it is not an edge-artefact shortcut, and not content alone. Repainting a ring *around* the object changes nothing (it does not use the surroundings). By encoder stage, the evidence sits in the mid-scale stages 2–3 (removing one cuts a real object's score 56–64%); the coarsest stage carries 32% of the gradient but its removal barely matters (16%), so gradient shares alone would mislead. Pasted objects are more redundant: no single stage matters much for them (score saturated near 1.0). The three heads' *disagreement* is only ~3% of their total uncertainty and cannot flag the dominant edge error (misses look as certain as hits: AUROC 0.65–0.67 for "this edge pixel is wrong"). Counts and limits: 39 detected real objects, one checkpoint; a fill can itself trigger a detection (10–27% on clean road), so removal rates are lower bounds.
+
 **Staging gates.** 0.75 AUROC is the pre-calibration gate to begin Phase 2b (`L_calib`); **0.83** — Experiment A's baseline — remains the real post-calibration target. Both are cleared. The bar did not move: calibration is a stated, accounted-for tradeoff, not a lowered goal (see `CALIBRATION_TRADEOFF_NOTE` in `config.py`).
 
 ---
@@ -273,6 +275,10 @@ check_uncertainty_split.py  Novelty 7: head disagreement vs MC-Dropout, clean vs
 check_ablation.py           Novelty 5: 1-head vs 3-head vs calibrated, mIoU per class
 check_dual_mode.py          latency of both modes + safety-trigger threshold sweep
 check_detections.py         boxes the model draws on real frames (check_detections.png)
+explain.py                  why it flags an object: counterfactual removal, encoder-stage
+                            attribution, epistemic/aleatoric split; --demo writes the /demo figures
+validate_explain.py         checks explain.py's building blocks (regions, fills, gradient hook vs
+                            finite differences, entropy split) before its numbers are trusted
 
 preflight.py                16 checks; run before every training run
 validate_metrics.py         checks every metric against sklearn / brute force
@@ -282,7 +288,9 @@ check_collapse.py           per-head class separation on a saved checkpoint
 check_data.py               visual + statistical check of the anomaly training data
 
 download_coco_anomalies.py  builds the COCO object bank
-generate_anomalies.py       builds the CARLA object bank (needs a CARLA server; see caveats)
+generate_anomalies.py       builds the CARLA object bank (needs a CARLA server; has a known sync bug)
+record_route.py             records a CARLA drive with synchronous, pixel-exact masks (ported from
+                            `main`; needs CARLA 0.9.15, untested against the real simulator here)
 
 server.py                   live demo backend (FastAPI), serves the React build
 frontend/                   live demo dashboard (React + Vite), see frontend/README.md
@@ -383,7 +391,7 @@ State these before a reviewer finds them.
 - **RoadAnomaly21** (10 labelled images): AUROC 0.72, below the baseline's 0.87. Large close-up anomalies fail, most likely because pasted training objects are sized for Lost & Found's small debris.
 - **Robustness:** camera noise drops AP 0.75 → 0.55 and motion blur → 0.57; fog barely matters.
 
-**CARLA frames are not used.** In the 45 frames from `generate_anomalies.py`, the RGB and mask were captured asynchronously, so 23 of 45 masks don't line up with the object. Pooling them with COCO (the `main` branch) cost 0.17 AP. The script needs synchronous capture before CARLA data is usable.
+**CARLA frames are not used.** In the 45 frames from `generate_anomalies.py`, the RGB and mask were captured asynchronously, so 23 of 45 masks don't line up with the object. Pooling them with COCO (the `main` branch) cost 0.17 AP. `record_route.py` (ported from `main`) captures synchronously and is the way to fix this; on this branch its logic is verified against a simulated CARLA only, so its first real run should be a small pilot whose frames are inspected by eye.
 
 ---
 
@@ -395,6 +403,8 @@ Done on `exp_v2`, with results in `runs/RESULTS.md`:
 - Phase 2b: plain-NLL temperature baselines, and edge-band L_calib with an anchor.
 - Edge ECE, and per-object UBQ with a threshold sweep (Novelty 4/6).
 - The between- vs within-head uncertainty test (Novelty 7).
+- Explainability: counterfactual removal, encoder-stage attribution, epistemic/aleatoric split, with a `/demo` panel (`explain.py`).
+- `record_route.py` (synchronous CARLA recording) ported from `main`, logic-tested against a simulated CARLA.
 - The dual-mode latency and trigger sweep (Novelty 2).
 - RoadAnomaly21.
 - The live demo.

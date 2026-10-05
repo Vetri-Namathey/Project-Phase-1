@@ -406,3 +406,13 @@ h1, h2, .display{ font-family:'Archivo Black', sans-serif; text-transform:upperc
     transition-duration:0.01ms !important; scroll-behavior:auto !important;
   }
 }
+
+/* Explainability panel (DemoPage ExplainSection): per-stage evidence bars */
+.stagebars{ display:grid; gap:6px; max-width:860px; }
+.stagebar{ display:grid; grid-template-columns:190px 1fr 56px 220px; gap:10px; align-items:center; font-size:11.5px; }
+.stagebar.head{ font-size:9.5px; letter-spacing:0.05em; color:var(--ink-faint); }
+.stagebar .track{ height:12px; background:var(--surface-2); border:2px solid var(--line); }
+.stagebar .fill{ height:100%; background:var(--accent); transition:width var(--dur-slow) var(--ease); }
+.stagebar .val{ text-align:right; }
+.stagebar .val.dim{ text-align:left; color:var(--ink-dim); }
+@media (max-width:900px){ .stagebar{ grid-template-columns:120px 1fr 48px; } .stagebar .val.dim{ display:none; } }
