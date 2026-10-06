@@ -228,6 +228,82 @@ function CalibrationPanel() {
   )
 }
 
+// Every number from eval_road_anomaly21.log (model_3head_best.pth, scale 1, the 10
+// RoadAnomaly21 validation images with public labels; nothing fitted on them).
+const RA21 = {
+  twinguard: { ap: 0.3084, auroc: 0.6550, fpr95: 1.0, ece: 0.1335 },
+  msp: { ap: 0.4744, auroc: 0.8705, fpr95: 0.3504, ece: 0.0990 },
+  images: [
+    ['0000', 8.32, 0.6094], ['0001', 7.24, 0.2417], ['0002', 7.94, 0.3395], ['0003', 17.99, 0.4371],
+    ['0004', 36.76, 0.4449], ['0005', 10.82, 0.0976], ['0006', 6.78, 0.8133], ['0007', 22.19, 0.2686],
+    ['0008', 27.87, 0.5135], ['0009', 1.69, 0.7291],
+  ],
+}
+
+function GeneralisationPanel() {
+  const rows = [
+    { label: 'AP', key: 'ap', higherBetter: true },
+    { label: 'AUROC', key: 'auroc', higherBetter: true },
+    { label: 'FPR@95', key: 'fpr95', higherBetter: false },
+    { label: 'ECE', key: 'ece', higherBetter: false },
+  ]
+  const byArea = [...RA21.images].sort((a, b) => a[1] - b[1])
+  return (
+    <section className="calib-block">
+      <div className="stage-head">
+        <h2>Second dataset — where it does not generalise</h2>
+        <p>
+          RoadAnomaly21 (SegmentMeIfYouCan): web photos where the anomaly is large and close, 14.8% of pixels
+          vs 0.28% in Lost&amp;Found. Only its 10 validation images have public labels, so this is a sanity
+          check, not a benchmark. Nothing was tuned on them.
+        </p>
+      </div>
+      <div className="calib-body">
+        <table className="calib-table">
+          <thead>
+            <tr><th>Metric</th><th>TwinGuard (3 heads)</th><th>MSP baseline</th><th>Δ</th></tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const a = RA21.twinguard[r.key]
+              const b = RA21.msp[r.key]
+              const d = a - b
+              const worse = r.higherBetter ? d < 0 : d > 0
+              return (
+                <tr key={r.key}>
+                  <td className="mono">{r.label}</td>
+                  <td className="mono">{a.toFixed(4)}</td>
+                  <td className="mono">{b.toFixed(4)}</td>
+                  <td className={`mono delta ${worse ? 'delta-bad' : 'delta-good'}`}>{`${d >= 0 ? '+' : ''}${d.toFixed(4)}`}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+
+        <div className="ra-bars">
+          <div className="ra-bars-head mono">TWINGUARD AP PER IMAGE · SORTED BY ANOMALY SIZE</div>
+          {byArea.map(([id, area, ap]) => (
+            <div className="ra-row" key={id} title={`validation${id}: anomaly ${area}% of pixels, AP ${ap}`}>
+              <span className="mono ra-id">#{id}</span>
+              <span className="mono ra-area">{area.toFixed(1)}%</span>
+              <div className="ra-track"><div className="ra-fill" style={{ width: `${(100 * ap).toFixed(0)}%` }} /></div>
+              <span className="mono ra-val">{ap.toFixed(2)}</span>
+            </div>
+          ))}
+        </div>
+
+        <p className="calib-note">
+          TwinGuard falls below plain MSP here. Its heads were trained on small pasted objects, and
+          large close anomalies are a different problem. The project lead's separately trained COCO-only
+          model shows the same pattern (AUROC 0.72 vs MSP 0.87), so we report this as a
+          generalisation limitation. Source: eval_road_anomaly21.log.
+        </p>
+      </div>
+    </section>
+  )
+}
+
 export default function HomePage() {
   return (
     <div className="content home">
@@ -271,6 +347,8 @@ export default function HomePage() {
       </p>
 
       <CalibrationPanel />
+
+      <GeneralisationPanel />
 
       <section className="feature-block">
         <div className="stage-head">

@@ -480,3 +480,13 @@ h1, h2, .display{ font-family:'Archivo Black', sans-serif; text-transform:upperc
 .x5-bar > div{ height:100%; background:var(--ink); border-radius:5px; }
 .x5-card.real .x5-bar > div{ background:var(--accent); }
 .x5-sub{ font-size:12px; color:var(--ink-dim); margin-top:8px; }
+
+/* Home: RoadAnomaly21 per-image AP bars */
+.ra-bars{ margin-top:18px; border:2px solid var(--line); padding:14px 16px; background:var(--surface); }
+.ra-bars-head{ font-size:12px; color:var(--ink-dim); letter-spacing:0.04em; margin-bottom:10px; }
+.ra-row{ display:grid; grid-template-columns:56px 56px 1fr 44px; align-items:center; gap:10px; margin-bottom:7px; font-size:13px; }
+.ra-id{ color:var(--ink-dim); }
+.ra-area{ color:var(--ink-faint); text-align:right; }
+.ra-track{ height:12px; background:var(--surface-2); border-radius:6px; overflow:hidden; }
+.ra-fill{ height:100%; background:var(--accent); border-radius:6px; transition:width var(--dur-slow) var(--ease); }
+.ra-val{ text-align:right; }
