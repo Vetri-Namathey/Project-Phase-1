@@ -44,10 +44,17 @@ def mlflow_experiment():
 
 
 def load_trained_model(checkpoint_path=None, device=None, num_heads=3):
-    """Builds TwinGuard and loads a saved checkpoint into it."""
+    """Builds TwinGuard and loads a saved checkpoint into it.
+
+    checkpoint_path is required. It used to fall back to
+    config.CHECKPOINT_3HEAD, a stale training-output file on this machine, so
+    a forgotten flag silently scored the wrong model (MISTAKES.md M15).
+    """
     from model.twinguard_model import TwinGuardModel
 
-    checkpoint_path = checkpoint_path or config.CHECKPOINT_3HEAD
+    if not checkpoint_path:
+        raise ValueError("explicit checkpoint path required, see MISTAKES.md M15 "
+                         f"(the primary model is {config.PRIMARY_RAW})")
     device = device or get_device(verbose=False)
     seeds = (config.OOD_HEAD_SEEDS_3HEAD if num_heads == 3
              else config.OOD_HEAD_SEEDS_1HEAD)

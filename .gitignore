@@ -80,3 +80,21 @@ static_react/
 # Local environment / secrets, if any ever get created
 .env
 .env.local
+
+# Transcript from run_video.ps1 (the eval numbers are kept in eval_video_town02.log)
+/run_video.log
+
+# explain.py outputs (per-image JSON + example strips); numbers are kept in explain_x1.log
+/explain_out/
+
+# 3-agent workflow state (reports, brief, exp_v2 snapshot, pre-edit copies). Local only:
+# it holds machine paths and a copy of another branch.
+/agent_state/
+
+# Internal process notes (mistake log, frozen old plan). Local only, not project source.
+/MISTAKES.md
+/PLAN_HISTORY.md
+
+# The demo video IS needed by a fresh clone (/demo plays it; ~16 MB, under GitHub's
+# 100 MB limit). Everything else *.mp4 stays ignored.
+!/static/video/twinguard_video_town02_pasted.mp4

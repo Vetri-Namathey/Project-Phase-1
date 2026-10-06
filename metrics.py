@@ -17,7 +17,8 @@ against sklearn including that case -- see validate_metrics.py.
 """
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import binary_erosion, distance_transform_edt
+from scipy.ndimage import label as label_components
 
 import config
 
@@ -119,6 +120,24 @@ class ScoreHistogram:
             return 0.0
         original_bin = self.n_bins - 1 - reached[0]
         return float(original_bin / self.n_bins)
+
+    def threshold_at_max_f1(self):
+        """Score threshold maximising pixel-level F1 of `scores >= t`.
+
+        The operating point for ubq_local (ported from exp_v2).
+        threshold_at_tpr(0.95) forces 95% recall, which on Fishyscapes flags
+        ~7% of every frame (eval_fishyscapes_c5.log) -- a region that big has
+        no meaningful outline to measure. Max-F1 balances missed object
+        pixels against false alarms instead. Fit on a val half and applied
+        unchanged elsewhere, like threshold_at_tpr.
+        """
+        if self.n_pos == 0:
+            return float("nan")
+        tp = np.cumsum(self.pos[::-1]).astype(np.float64)
+        fp = np.cumsum(self.neg[::-1]).astype(np.float64)
+        f1 = 2 * tp / (tp + fp + self.n_pos)
+        best = int(np.argmax(f1))
+        return float((self.n_bins - 1 - best) / self.n_bins)
 
     def ece(self, n_bins=15):
         """Expected Calibration Error over the accumulated histogram.
@@ -336,3 +355,118 @@ def ubq(pred_mask, anomaly_mask, valid=None):
         "gt_to_pred_px": float(gt_to_pred_vals.max()),
         "pred_to_gt_p95": float(np.percentile(pred_to_gt_vals, 95)),
     }
+
+
+def _outline(mask):
+    """Pixels of `mask` that touch a pixel outside it (4-neighbourhood)."""
+    mask = np.asarray(mask, dtype=bool)
+    return mask & ~binary_erosion(mask, border_value=0)
+
+
+def ubq_local(pred_mask, anomaly_mask, valid=None, roi_px=32, tolerance_px=4):
+    """UBQ measured where boundary quality actually lives: object by object.
+    Ported from exp_v2.
+
+    ubq() above takes the worst distance anywhere in the frame, so one false
+    alarm 1000px from any object decides the score -- that is a detection
+    error, not a boundary one. On our model it reads ~1152px for every
+    calibrator (eval_fishyscapes_c5.log), i.e. it measures nothing about
+    outlines.
+
+    Each ground-truth object (connected component) is scored on its own,
+    using only predictions within roi_px of THAT object, so a missed second
+    object or a false alarm elsewhere cannot leak into an outline score:
+
+      detected     any prediction within roi_px of the object. Missed
+                   objects are counted (object recall), not scored.
+      spill_px     mean distance (px) of predicted pixels OUTSIDE the object
+                   -- "how far does the flagged region bleed past the edge?"
+      miss_px      mean distance (px) from object pixels to the nearest
+                   predicted pixel -- "how much of the object is left out?"
+      boundary_f1  standard boundary F-score at tolerance_px: share of each
+                   outline lying within tolerance_px of the other.
+
+    Returns (objects, far_fp_px, pred_px): a list of per-object dicts
+    ({"detected": False} for a missed one), the number of predicted pixels
+    further than roi_px from every object, and the total predicted pixels --
+    so callers can pool false alarms across images by pixel count. Empty
+    ground truth returns ([], pred_px, pred_px): every prediction is far.
+    """
+    pred = np.asarray(pred_mask, dtype=bool)
+    gt = np.asarray(anomaly_mask, dtype=bool)
+    if valid is not None:
+        v = np.asarray(valid, dtype=bool)
+        pred, gt = pred & v, gt & v
+    if not gt.any():
+        return [], int(pred.sum()), int(pred.sum())
+
+    far_fp_px = int((pred & (distance_transform_edt(~gt) > roi_px)).sum())
+    labelled, n = label_components(gt)
+    margin = roi_px + tolerance_px + 2
+    h, w = gt.shape
+    objects = []
+    for k in range(1, n + 1):
+        ys, xs = np.nonzero(labelled == k)
+        y0, y1 = max(ys.min() - margin, 0), min(ys.max() + margin + 1, h)
+        x0, x1 = max(xs.min() - margin, 0), min(xs.max() + margin + 1, w)
+        obj = labelled[y0:y1, x0:x1] == k
+        dist = distance_transform_edt(~obj)
+        local = pred[y0:y1, x0:x1] & (dist <= roi_px)
+        if not local.any():
+            objects.append({"detected": False})
+            continue
+        outside = local & ~gt[y0:y1, x0:x1]
+        obj_edge, pred_edge = _outline(obj), _outline(local)
+        precision = float((distance_transform_edt(~obj_edge)[pred_edge] <= tolerance_px).mean())
+        recall = float((distance_transform_edt(~pred_edge)[obj_edge] <= tolerance_px).mean())
+        objects.append({
+            "detected": True,
+            "spill_px": float(dist[outside].mean()) if outside.any() else 0.0,
+            "miss_px": float(distance_transform_edt(~local)[obj].mean()),
+            "boundary_f1": 0.0 if precision + recall == 0 else
+                           2 * precision * recall / (precision + recall),
+        })
+    return objects, far_fp_px, int(pred.sum())
+
+
+# ---------------------------------------------------------------------------
+# Paired image bootstrap of AP (PLAN.md P1 rule f, P3). AP is not a mean of
+# per-image values, so each resample re-pools per-image score histograms and
+# recomputes AP from the pooled counts -- the same estimator as the reported
+# number, just on resampled images.
+# ---------------------------------------------------------------------------
+
+def _pooled_ap(pos, neg):
+    hist = ScoreHistogram(n_bins=pos.shape[-1])
+    hist.pos, hist.neg = pos, neg
+    return hist.average_precision()
+
+
+def paired_bootstrap_ap(per_image_a, per_image_b, n_resamples=1000, seed=config.GLOBAL_SEED):
+    """95% CI of AP(a) - AP(b), resampling the SAME image indices for both.
+
+    per_image_a / per_image_b: equal-length lists of (pos, neg) count arrays,
+    one pair per image, from ScoreHistogram(n_bins=DEFAULT_BINS) -- the full
+    resolution, so the pooled AP equals the reported one. A resample is a
+    vector of per-image counts w, so pooled counts are w @ stack: one
+    matrix-vector product instead of copying the 50 x 200k stack each round.
+
+    Returns {"ap_a", "ap_b", "diff", "lo", "hi"} (full-sample APs and diff).
+    """
+    assert len(per_image_a) == len(per_image_b) > 0, "need paired, non-empty inputs"
+    stacks = []
+    for per_image in (per_image_a, per_image_b):
+        pos = np.stack([p for p, _ in per_image]).astype(np.float64)
+        neg = np.stack([n for _, n in per_image]).astype(np.float64)
+        stacks.append((pos, neg))
+    n = len(per_image_a)
+    full = [_pooled_ap(pos.sum(0), neg.sum(0)) for pos, neg in stacks]
+    rng = np.random.default_rng(seed)
+    diffs = np.empty(n_resamples)
+    for i in range(n_resamples):
+        w = np.bincount(rng.integers(0, n, n), minlength=n).astype(np.float64)
+        aps = [_pooled_ap(w @ pos, w @ neg) for pos, neg in stacks]
+        diffs[i] = aps[0] - aps[1]
+    lo, hi = np.percentile(diffs, [2.5, 97.5])
+    return {"ap_a": full[0], "ap_b": full[1], "diff": full[0] - full[1],
+            "lo": float(lo), "hi": float(hi)}

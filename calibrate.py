@@ -1,31 +1,34 @@
-"""Phase 2b: L_calib.
+"""Phase 2b: L_calib, and the temperature-scaling baseline it has to beat.
 
-Three things this script does, in order, matching PLAN.md's "Calibration
-(L_calib) gate" and "Proof-of-change outputs" sections:
+Three modes. Exactly one must be named, so no flag combination trains by
+accident: a bare run used to start an L_calib fine-tune on the stale
+config.CHECKPOINT_3HEAD (MISTAKES.md M15).
 
-1. Temperature scaling -- a single scalar T fit on the Fishyscapes val half.
-   This is the BASELINE L_calib has to beat, not a step towards L_calib. A
-   scalar rescale cannot reshape calibration spatially, which is the whole
-   point (see losses.py's SoftECELoss docstring).
-2. L_calib joint fine-tune -- continues training an already-converged
-   checkpoint with a differentiable ECE-surrogate loss added to the existing
-   seg+OOD loss. Selects on val ECE, but restarts if val AUROC drops more
-   than config.CALIB_AUROC_DROP_LIMIT (a SMALL, accounted-for cost is
-   expected per CALIBRATION_TRADEOFF_NOTE -- an open-ended one is not).
-3. Comparison table + reliability diagram -- raw vs. temp-scaled vs.
-   L_calib, on AUROC/AP/FPR@95/ECE (Fishyscapes test half), logged to MLflow
-   and saved as a plot.
+  --compare-only --raw R --calib C [--temp-whole T]
+      Eval only. Fishyscapes TEST-half table: raw vs temp(whole) vs L_calib,
+      whole-image metrics plus band-ECE r=8, and a NEW reliability png. T is
+      fitted on the val half (plain NLL) unless --temp-whole passes the T
+      that eval_spatial.py already fitted (PLAN.md U2-3).
+  --temp-only --checkpoint R
+      Eval only. Fits whole + band T on the val half, reports the test half.
+  --train-lcalib --checkpoint R
+      The only route into run_calib_finetune. Writes
+      config.CHECKPOINT_3HEAD_CALIB, a training-output path that is never the
+      primary model file.
 
-Whole-image ECE only. Boundary-only ECE (Novelty 6) and UBQ are separate,
-still-unbuilt metrics (see PLAN.md's UBQ section) -- this comparison alone
-cannot prove L_calib beats temperature scaling on the actual spatial claim
-that is the point of building it. Said explicitly in the table's own output,
-not left implicit.
+Temperature fit: plain binary NLL with a bounded 1-D search over log T,
+ported from exp_v2. The previous fit minimised the TRAINING loss
+(pos_weight=20) for 3 Adam epochs and stopped while T was still rising; its
+T=1.7142 is invalid (MISTAKES.md M1). It survives only as
+_fit_temperature_weighted_DEPRECATED so that number can be reproduced; no
+flag reaches it.
+
+eval_spatial.py adds r=4/8/16 bands, UBQ and paired bootstrap CIs on top.
 
 Usage:
-    python calibrate.py               # all three steps
-    python calibrate.py --temp-only   # step 1 only, quick sanity check
-    python calibrate.py --checkpoint checkpoints/some_other.pth
+    python calibrate.py --compare-only --raw model_3head_best.pth --calib model_3head_calib_best.pth --temp-whole <T>
+    python calibrate.py --temp-only --checkpoint model_3head_best.pth
+    python calibrate.py --train-lcalib --checkpoint model_3head_best.pth
 """
 
 import argparse
@@ -39,6 +42,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from scipy.optimize import minimize_scalar
 from torch.utils.data import DataLoader
 
 import config
@@ -47,14 +51,20 @@ from data.cutmix import CutMixAugmentedDataset
 from data.fishyscapes_dataset import list_fishyscapes_pairs, split_fishyscapes_pairs
 from data.transforms import load_image_tensor
 from losses import SoftECELoss, build_seg_criterion, compute_total_loss, ood_bce_loss
-from metrics import ScoreHistogram
+from metrics import ScoreHistogram, boundary_band
 from train import amp_context
 from utils import get_device, load_trained_model
+
+REGIONS = ("whole", "band")
+# The png calibrate.py used to write. It holds the invalid T=1.7142 curve and
+# stays on disk as the record of M1 (no-delete rule), so nothing overwrites it.
+LEGACY_PNG = "calibration_reliability.png"
 
 
 def _cache_logits(model, pairs, device):
     """One forward pass per image, cached -- reused across every temperature
-    -fit epoch without re-running the (frozen) encoder each time."""
+    -fit epoch without re-running the (frozen) encoder each time. Used only
+    by the deprecated weighted fit."""
     cached = []
     model.eval()
     with torch.no_grad():
@@ -73,13 +83,17 @@ def _cache_logits(model, pairs, device):
     return cached
 
 
-def fit_temperature(model, val_pairs, device):
-    """Single scalar T minimizing the SAME per-head BCE the model was
-    trained with, on logit/T instead of raw logits, over the Fishyscapes val
-    half. This is the temperature-scaling BASELINE -- see this file's
-    module docstring for why it is not L_calib itself.
+def _fit_temperature_weighted_DEPRECATED(model, val_pairs, device):
+    """DEPRECATED -- produced the invalid T=1.7142 (MISTAKES.md M1). Do not use.
+
+    Minimises the training loss (ood_bce_loss, pos_weight=20) for
+    config.TEMPERATURE_EPOCHS Adam epochs from T=1.5. pos_weight=20 rewards
+    higher scores on positives, so the optimum sits above the NLL optimum,
+    and 3 epochs stop before convergence (calibrate.log: 1.5688 -> 1.6421 ->
+    1.7142, loss still falling). Kept only so that number can be reproduced;
+    no command-line flag reaches it. Use fit_temperatures.
     """
-    print("fitting temperature scaling baseline...")
+    print("fitting temperature with the DEPRECATED weighted objective (M1)...")
     cached = _cache_logits(model, val_pairs, device)
     temperature = torch.nn.Parameter(torch.ones(1, device=device) * 1.5)
     optimizer = torch.optim.Adam([temperature], lr=config.TEMPERATURE_LEARNING_RATE)
@@ -103,6 +117,81 @@ def fit_temperature(model, val_pairs, device):
     return float(temperature.detach().item())
 
 
+def temperature_cache_entry(logits, anomaly, valid, radius=config.TEMPERATURE_BAND_RADIUS_PX):
+    """(heads, H, W) logits at label resolution -> one entry of the
+    temperature-fit cache: per-head logits over valid pixels, their targets,
+    and which of them fall in the r-band. Shared with eval_spatial.py so both
+    scripts fit T on exactly the same pixels."""
+    band = boundary_band(anomaly, radius_px=radius, valid=valid)
+    valid_t = torch.from_numpy(valid)
+    return (logits[:, valid_t].cpu(),
+            torch.from_numpy(anomaly[valid].astype(np.float32)),
+            torch.from_numpy(band[valid]))
+
+
+@torch.no_grad()
+def _cache_val_logits(model, pairs, device):
+    """One forward pass per val image, so every temperature the 1-D search
+    tries is scored without re-running the model."""
+    cached = []
+    model.eval()
+    for image_path, label_path in pairs:
+        label_map = np.array(Image.open(label_path))
+        valid, anomaly = label_map != 255, label_map == 1
+        with amp_context(device):
+            out = model(load_image_tensor(image_path, device))
+        logits = F.interpolate(out["ood_logits"].float(), size=anomaly.shape,
+                               mode="bilinear", align_corners=False).squeeze(0).cpu()
+        cached.append(temperature_cache_entry(logits, anomaly, valid))
+    return cached
+
+
+def _mean_nll(cached, temperature, region):
+    """Plain (unweighted) binary NLL of sigmoid(logit / T), averaged over
+    every head and every pixel in the region -- i.e. T is applied per head,
+    before the fusion mean, exactly as the scores are later computed."""
+    total, count = 0.0, 0
+    for logits, target, band in cached:
+        if region == "band":
+            logits, target = logits[:, band], target[band]
+        if target.numel() == 0:
+            continue
+        total += F.binary_cross_entropy_with_logits(
+            logits / temperature, target.expand_as(logits), reduction="sum").item()
+        count += logits.numel()
+    return total / count
+
+
+def fit_temperatures_from_cache(cached, verbose=True):
+    """Fits T separately for each region in REGIONS. Returns {region: T}.
+
+    Plain NLL, NOT the training loss: the training loss carries
+    pos_weight=20, which rewards pushing scores UP (MISTAKES.md M1). A
+    bounded scalar search is deterministic, so the same logits always give
+    the same T.
+    """
+    lo, hi = config.TEMPERATURE_LOG_BOUNDS
+    temperatures = {}
+    for region in REGIONS:
+        res = minimize_scalar(lambda log_t: _mean_nll(cached, float(np.exp(log_t)), region),
+                              bounds=(lo, hi), method="bounded",
+                              options={"xatol": 1e-4})
+        t = float(np.exp(res.x))
+        if abs(res.x - lo) < 1e-3 or abs(res.x - hi) < 1e-3:
+            print(f"  WARNING: {region} T={t:.4f} hit the search bound -- widen "
+                  f"config.TEMPERATURE_LOG_BOUNDS")
+        if verbose:
+            print(f"  {region:<5}  T={t:.4f}  NLL {_mean_nll(cached, 1.0, region):.6f} "
+                  f"(T=1) -> {res.fun:.6f}  [{res.nfev} evaluations]")
+        temperatures[region] = t
+    return temperatures
+
+
+def fit_temperatures(model, val_pairs, device):
+    print("fitting temperature scaling baselines (plain NLL, Fishyscapes val half)...")
+    return fit_temperatures_from_cache(_cache_val_logits(model, val_pairs, device))
+
+
 @torch.no_grad()
 def evaluate_fused(model, pairs, device, temperature=1.0):
     """Fused-score AUROC/AP/FPR@95/ECE on a Fishyscapes split, with an
@@ -124,6 +213,28 @@ def evaluate_fused(model, pairs, device, temperature=1.0):
         scores = torch.sigmoid(logits / temperature).mean(dim=1)
         hist.update(scores.squeeze(0).cpu().numpy()[valid], labels)
     return hist
+
+
+@torch.no_grad()
+def evaluate_regions(model, pairs, device, temperature=1.0,
+                     radius=config.TEMPERATURE_BAND_RADIUS_PX):
+    """evaluate_fused, plus a second histogram over the r-band, so the
+    comparison table carries the edge number the paper is about."""
+    model.eval()
+    hists = {region: ScoreHistogram() for region in REGIONS}
+    for image_path, label_path in pairs:
+        label_map = np.array(Image.open(label_path))
+        valid, anomaly = label_map != 255, label_map == 1
+        band = boundary_band(anomaly, radius_px=radius, valid=valid)
+        with amp_context(device):
+            out = model(load_image_tensor(image_path, device))
+        logits = F.interpolate(out["ood_logits"].float(), size=label_map.shape,
+                               mode="bilinear", align_corners=False)
+        scores = torch.sigmoid(logits / temperature).mean(dim=1).squeeze(0).cpu().numpy()
+        labels = anomaly.astype(np.int64)
+        hists["whole"].update(scores[valid], labels[valid])
+        hists["band"].update(scores[band], labels[band])
+    return hists
 
 
 def run_calib_finetune(base_checkpoint, device):
@@ -226,111 +337,185 @@ def run_calib_finetune(base_checkpoint, device):
     return config.CHECKPOINT_3HEAD_CALIB
 
 
-def comparison_table(raw_model, temperature, calib_model, fishy_test, device):
-    """PLAN.md's 'Comparison table' proof-of-change artifact."""
-    raw_hist = evaluate_fused(raw_model, fishy_test, device, temperature=1.0)
-    temp_hist = evaluate_fused(raw_model, fishy_test, device, temperature=temperature)
-    calib_hist = evaluate_fused(calib_model, fishy_test, device, temperature=1.0)
-    rows = [("raw", raw_hist), ("temp-scaled", temp_hist), ("L_calib", calib_hist)]
-
-    header = f"{'model':<14} {'AUROC':>7} {'AP':>7} {'FPR@95':>7} {'ECE':>7}"
-    print(header)
+def comparison_table(rows):
+    """rows: [(name, {"whole": hist, "band": hist})], all on the test half."""
+    r = config.TEMPERATURE_BAND_RADIUS_PX
+    header = (f"{'model':<20} {'AUROC':>7} {'AP':>7} {'FPR@95':>7} "
+              f"{'ECE':>8} {f'band-ECE r={r}':>14}")
+    print("\n" + header)
     print("-" * len(header))
     results = {}
-    for name, hist in rows:
-        m = hist.summary()
-        print(f"{name:<14} {m['auroc']:>7.4f} {m['ap']:>7.4f} "
-              f"{m['fpr95']:>7.4f} {m['ece']:>7.4f}")
+    for name, hists in rows:
+        m = hists["whole"].summary()
+        m["band_ece"] = hists["band"].ece()
+        print(f"{name:<20} {m['auroc']:>7.4f} {m['ap']:>7.4f} {m['fpr95']:>7.4f} "
+              f"{m['ece']:>8.5f} {m['band_ece']:>14.4f}")
         results[name] = m
-
-    print(f"\ntemperature (fitted): {temperature:.4f}")
-    print(config.CALIBRATION_TRADEOFF_NOTE)
-    print("Note: whole-image ECE only. Boundary-only ECE (Novelty 6) and UBQ "
-          "are separate, still-unbuilt metrics -- this table alone cannot "
-          "prove L_calib beats temperature scaling on the spatial claim that "
-          "is the actual point of building it (see PLAN.md).")
-    return results, dict(rows)
+    print("Whole-image ECE is dominated by easy background pixels; the band column "
+          "is the edge number. For r=4/8/16, UBQ and confidence intervals run "
+          "eval_spatial.py.")
+    return results
 
 
-def reliability_diagram(hists, out_path="calibration_reliability.png"):
-    """Three curves -- raw, temp-scaled, L_calib -- confidence vs. actual
-    accuracy, binned. Built from the same per-bin data ScoreHistogram.ece()
-    uses internally, so it can never show something the reported ECE numbers
-    disagree with.
-    """
-    fig, ax = plt.subplots(figsize=(6, 6))
-    ax.plot([0, 1], [0, 1], "k--", label="perfectly calibrated")
-    colors = {"raw": "#3D5AFE", "temp-scaled": "#4472C4", "L_calib": "#2E8B57"}
-    for name, hist in hists.items():
-        conf, acc, weight = hist.reliability_curve()
-        mask = weight > 0
-        ax.plot(conf[mask], acc[mask], marker="o", label=name,
-               color=colors.get(name))
-    ax.set_xlabel("mean predicted score (confidence)")
-    ax.set_ylabel("empirical positive rate (accuracy)")
-    ax.set_title("Reliability diagram -- Fishyscapes test half")
-    ax.legend()
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
+def reliability_diagram(hists, out_path):
+    """Whole-image and band panels, one curve per model. Built from the same
+    per-bin data ScoreHistogram.ece() uses, so the diagram and the reported
+    ECE numbers can never silently disagree."""
+    if os.path.basename(out_path) == LEGACY_PNG:
+        raise SystemExit(f"refusing to overwrite {LEGACY_PNG}: it is the T=1.7142 record "
+                         f"(MISTAKES.md M1). Pass a different --png.")
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    for ax, region in zip(axes, REGIONS):
+        ax.plot([0, 1], [0, 1], "k--", label="perfectly calibrated")
+        for name, per_region in hists.items():
+            conf, acc, weight = per_region[region].reliability_curve()
+            mask = weight > 0
+            ax.plot(conf[mask], acc[mask], marker="o", label=name)
+        title = ("whole image" if region == "whole"
+                 else f"boundary band r={config.TEMPERATURE_BAND_RADIUS_PX}px")
+        ax.set_title(f"Reliability -- {title} (Fishyscapes test half)")
+        ax.set_xlabel("mean predicted score (confidence)")
+        ax.set_ylabel("empirical positive rate (accuracy)")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.legend()
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     print(f"saved {out_path}")
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--temp-only", action="store_true",
-                        help="fit + evaluate temperature scaling only, skip the L_calib fine-tune")
-    parser.add_argument("--checkpoint", default=None,
-                        help="base checkpoint to calibrate (default: config.CHECKPOINT_3HEAD)")
-    args = parser.parse_args()
-
-    device = get_device()
-    base_checkpoint = args.checkpoint or config.CHECKPOINT_3HEAD
-    raw_model = load_trained_model(base_checkpoint, device)
-
+def _fishyscapes_split():
     all_pairs = list_fishyscapes_pairs()
     assert len(all_pairs) == 100, f"expected 100 Fishyscapes pairs, found {len(all_pairs)}"
-    fishy_val, fishy_test = split_fishyscapes_pairs(all_pairs)
+    return split_fishyscapes_pairs(all_pairs)
 
-    temperature = fit_temperature(raw_model, fishy_val, device)
+
+def run_compare_only(args):
+    """Eval only: never constructs an optimiser or touches a checkpoint file
+    for writing."""
+    device = get_device()
+    raw_model = load_trained_model(args.raw, device)
+    calib_model = load_trained_model(args.calib, device)
+    fishy_val, fishy_test = _fishyscapes_split()
+
+    if args.temp_whole is not None:
+        temperature = args.temp_whole
+        source = "--temp-whole (fitted by eval_spatial.py on the val half)"
+    else:
+        temperature = fit_temperatures(raw_model, fishy_val, device)["whole"]
+        source = "fitted here on the val half (plain NLL)"
+    print(f"temp(whole) T = {temperature:.4f}  [{source}]")
+
+    rows = [("raw", evaluate_regions(raw_model, fishy_test, device, 1.0)),
+            (f"temp(whole) T={temperature:.4f}",
+             evaluate_regions(raw_model, fishy_test, device, temperature)),
+            ("L_calib", evaluate_regions(calib_model, fishy_test, device, 1.0))]
+    comparison_table(rows)
+    reliability_diagram(dict(rows), args.png)
+
+
+def run_temp_only(args):
+    device = get_device()
+    raw_model = load_trained_model(args.checkpoint, device)
+    fishy_val, fishy_test = _fishyscapes_split()
+    temperatures = fit_temperatures(raw_model, fishy_val, device)
 
     mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
     mlflow.set_experiment(config.MLFLOW_EXPERIMENT_NAME)
+    with mlflow.start_run(run_name="temperature_scaling_only"):
+        mlflow.log_params({"base_checkpoint": args.checkpoint,
+                           "temperature_whole": temperatures["whole"],
+                           "temperature_band": temperatures["band"]})
+        rows = [("raw", evaluate_regions(raw_model, fishy_test, device, 1.0))]
+        for region in REGIONS:
+            rows.append((f"temp({region}) T={temperatures[region]:.4f}",
+                         evaluate_regions(raw_model, fishy_test, device, temperatures[region])))
+        for name, m in comparison_table(rows).items():
+            key = name.split(" ")[0].replace("(", "_").replace(")", "")
+            mlflow.log_metrics({f"test_{key}_{k}": v for k, v in m.items()})
 
-    if args.temp_only:
-        with mlflow.start_run(run_name="temperature_scaling_only"):
-            mlflow.log_params({"base_checkpoint": base_checkpoint,
-                               "temperature": temperature})
-            hist = evaluate_fused(raw_model, fishy_test, device, temperature=temperature)
-            m = hist.summary()
-            mlflow.log_metrics(m)
-            print(f"temperature-scaled test: AUROC={m['auroc']:.4f} "
-                  f"AP={m['ap']:.4f} FPR@95={m['fpr95']:.4f} ECE={m['ece']:.4f}")
-        return
 
+def run_train_lcalib(args):
+    # Belt and braces for M15: the fine-tune writes CHECKPOINT_3HEAD_CALIB,
+    # which must never resolve to a primary model file.
+    out = os.path.abspath(config.CHECKPOINT_3HEAD_CALIB)
+    assert out not in (os.path.abspath(config.PRIMARY_RAW), os.path.abspath(config.PRIMARY_CALIB)), \
+        f"CHECKPOINT_3HEAD_CALIB points at a primary model file ({out}) -- see M15"
+    device = get_device()
+    raw_model = load_trained_model(args.checkpoint, device)
+    fishy_val, fishy_test = _fishyscapes_split()
+    temperature = fit_temperatures(raw_model, fishy_val, device)["whole"]
+
+    mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(config.MLFLOW_EXPERIMENT_NAME)
     with mlflow.start_run(run_name="l_calib_finetune"):
         mlflow.log_params({
-            "base_checkpoint": base_checkpoint,
+            "base_checkpoint": args.checkpoint,
             "beta_calib": config.BETA_CALIB,
             "calib_epochs": config.CALIB_EPOCHS,
             "calib_lr": config.CALIB_LEARNING_RATE,
             "auroc_drop_limit": config.CALIB_AUROC_DROP_LIMIT,
             "fitted_temperature": temperature,
         })
-        calib_checkpoint = run_calib_finetune(base_checkpoint, device)
+        calib_checkpoint = run_calib_finetune(args.checkpoint, device)
         calib_model = load_trained_model(calib_checkpoint, device)
-
-        results, hists = comparison_table(raw_model, temperature, calib_model,
-                                          fishy_test, device)
-        mlflow.log_metrics({f"raw_{k}": v for k, v in results["raw"].items()})
-        mlflow.log_metrics({f"temp_{k}": v for k, v in results["temp-scaled"].items()})
-        mlflow.log_metrics({f"calib_{k}": v for k, v in results["L_calib"].items()})
-
-        reliability_diagram(hists)
-        mlflow.log_artifact("calibration_reliability.png")
+        rows = [("raw", evaluate_regions(raw_model, fishy_test, device, 1.0)),
+                (f"temp(whole) T={temperature:.4f}",
+                 evaluate_regions(raw_model, fishy_test, device, temperature)),
+                ("L_calib", evaluate_regions(calib_model, fishy_test, device, 1.0))]
+        for name, m in comparison_table(rows).items():
+            key = name.split(" ")[0].replace("(", "_").replace(")", "")
+            mlflow.log_metrics({f"{key}_{k}": v for k, v in m.items()})
+        reliability_diagram(dict(rows), args.png)
+        mlflow.log_artifact(args.png)
         mlflow.log_artifact(calib_checkpoint)
+
+
+def build_parser():
+    parser = argparse.ArgumentParser()
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--compare-only", action="store_true",
+                      help="eval only: test-half table raw / temp(whole) / L_calib + new png")
+    mode.add_argument("--temp-only", action="store_true",
+                      help="eval only: fit whole + band T (plain NLL) on val, report test")
+    mode.add_argument("--train-lcalib", action="store_true",
+                      help="TRAINING: L_calib fine-tune of --checkpoint into "
+                           "config.CHECKPOINT_3HEAD_CALIB")
+    parser.add_argument("--raw", help=f"--compare-only: raw checkpoint, e.g. {config.PRIMARY_RAW}")
+    parser.add_argument("--calib", help=f"--compare-only: L_calib checkpoint, e.g. {config.PRIMARY_CALIB}")
+    parser.add_argument("--checkpoint",
+                        help="--temp-only / --train-lcalib: base checkpoint (explicit, M15)")
+    parser.add_argument("--temp-whole", type=float, default=None,
+                        help="--compare-only: use this whole-image T instead of refitting")
+    parser.add_argument("--png", default="calibration_reliability_T122.png",
+                        help=f"reliability diagram output (never {LEGACY_PNG})")
+    return parser
+
+
+def parse_args(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not (args.compare_only or args.temp_only or args.train_lcalib):
+        parser.error("no mode given. The training path is disabled by default (MISTAKES.md "
+                     "M15): pass exactly one of --compare-only, --temp-only, --train-lcalib")
+    if args.compare_only and not (args.raw and args.calib):
+        parser.error("--compare-only requires --raw and --calib")
+    if (args.temp_only or args.train_lcalib) and not args.checkpoint:
+        parser.error("--temp-only / --train-lcalib require --checkpoint")
+    if args.temp_whole is not None and not args.compare_only:
+        parser.error("--temp-whole is only used by --compare-only")
+    return args
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    if args.compare_only:
+        run_compare_only(args)
+    elif args.temp_only:
+        run_temp_only(args)
+    else:
+        run_train_lcalib(args)
 
 
 if __name__ == "__main__":

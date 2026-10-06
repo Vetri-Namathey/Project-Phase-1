@@ -42,6 +42,12 @@ WIDTH, HEIGHT, FOV = 1024, 512, 50.0
 CAMERA_HEIGHT_M = 1.5
 HIDDEN_Z = -500.0
 MIN_COMPONENT_PIXELS = 20  # smaller than generate_anomalies.py's 50: half the resolution
+# Props that fill a large part of the frame as the camera passes them. Pilot
+# run 2 (PLAN.md V0): a clothcontainer reached ~0.6 of the short side, 3x the
+# training CUTMIX_SCALE_MAX, and only its edges scored. Out of training scale,
+# so it says nothing about the model -- keep them out of the video.
+LARGE_PROPS = ("container", "kiosk", "vendingmachine", "pergola", "fountain",
+               "slide", "swing", "trampoline", "advertisement", "busstop")
 
 
 def get_for_frame(q, frame, timeout=5.0):
@@ -159,7 +165,8 @@ def main():
         # Props: ahead of the start, beside the camera's path (the camera moves
         # kinematically, so a prop dead-centre in its lane would be driven through).
         prop_bps = [bp for bp in bp_lib.filter("static.prop.*")
-                    if "box" not in bp.id and "shopping_cart" not in bp.id]
+                    if "box" not in bp.id and "shopping_cart" not in bp.id
+                    and not any(s in bp.id for s in LARGE_PROPS)]
         lo = int(10 / args.step_m)
         hi = len(route_full) - 1
         props = []

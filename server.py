@@ -3,12 +3,31 @@ review timeline -- see PPT_Update_Content.html Slide 8 for the full planned
 version with WebSocket streaming + CARLA playback, which comes after Phase
 2b/calibration, not before).
 
-Loads the verified checkpoint once at startup, runs real inference on the
-curated demo images ONE TIME, and caches every panel as a static PNG --
-so the actual review click-through is instant and can't fail on
-GPU/inference hiccups live in front of an audience. The inference is real
-(this is the actual trained TwinGuard pipeline), it just isn't re-run on
-every click.
+Loads the primary checkpoint once at startup, runs real inference on the
+demo frames ONE TIME, and caches every panel as a static PNG -- so the
+actual review click-through is instant and can't fail on GPU/inference
+hiccups live in front of an audience. The inference is real (this is the
+actual trained TwinGuard pipeline), it just isn't re-run on every click.
+
+Fixed 2026-10-05 (MISTAKES.md M13; the same bugs exp_v2 fixed on 2026-09-27),
+click-through UX unchanged:
+  * input goes through data.transforms.load_image_tensor -- the ImageNet
+    normalisation the frozen encoder needs. It used to get raw [0,1] pixels.
+  * no second sigmoid: ood_fused / ood_scores are already probabilities, and
+    sigmoid on top squashed every displayed score into [0.5, 0.73]. Scores
+    are now built exactly as in evaluation: upsample the per-head logits,
+    sigmoid, mean over heads.
+  * loads config.PRIMARY_RAW (the 2000-bank model), not the stale
+    config.CHECKPOINT_3HEAD training-output file.
+  * frames come from the Fishyscapes TEST half only, by a rule stated in the
+    page caption: the 3 frames with the highest per-frame AP and the 3 around
+    the median per-frame AP. The old code ranked all 100 frames (val
+    included) by ground-truth localisation and showed the best 6.
+  * the training gallery shows real CutMix composites (as exp_v2 did), not
+    the curated CARLA frames' misaligned masks (M10)
+  * panels are written to static/generated/test_half/ with a meta.json
+    recording the checkpoint, so stale panels are never reused and the old
+    ones in static/generated/demo_* stay on disk untouched.
 """
 
 import json
@@ -25,24 +44,39 @@ from fastapi.responses import FileResponse
 from PIL import Image
 
 import config
-from data.fishyscapes_dataset import list_fishyscapes_pairs
-from model.twinguard_model import TwinGuardModel
+from data.fishyscapes_dataset import list_fishyscapes_pairs, split_fishyscapes_pairs
+from data.transforms import load_image_tensor
+from metrics import ScoreHistogram
+from train import amp_context
+from utils import load_trained_model
 
-NUM_IMAGES = 6
+CHECKPOINT = config.PRIMARY_RAW
+NUM_HIGHEST = 3
+NUM_MEDIAN = 3
 DISPLAY_WIDTH = 720
 GRID_W = 96  # coarse value-lookup grid for hover readouts -- doesn't need per-pixel resolution
 NUM_TRAINING_SAMPLES = 8
 STATIC_DIR = "static"
 GENERATED_DIR = os.path.join(STATIC_DIR, "generated")
+DEMO_DIR = os.path.join(GENERATED_DIR, "test_half")
+# CutMix training gallery; the old curated-CARLA gallery in generated/training/
+# is left on disk, unused (M10).
+TRAINING_DIR = os.path.join(GENERATED_DIR, "training_cutmix")
+# Bump when the panel pipeline or the frame rule changes, so cached panels
+# built by older code are rebuilt instead of served.
+CACHE_VERSION = 2   # 2: boxes at the fixed val-fitted threshold (was a per-image percentile)
 
-# Real, logged results from the two actual RunPod training runs (see train_log.txt
-# on each run -- these are not placeholders). Checkpoint A isolates the mit-b5
-# backbone swap alone; Checkpoint B additionally splits the OOD heads onto their
-# own 10x-lower learning rate (config.USE_OOD_HEAD_LR_SPLIT).
-# Full progression, oldest first -- v1/v2/v3 are local-dev (mit-b2) attempts
-# with only a single best-AUROC number logged (no per-epoch history kept at
-# the time); Checkpoint A/B are the RunPod mit-b5 runs with full epoch logs.
-# Numbers match PPT_Update_Content.html Slide 4 and this project's train_log.txt files.
+# Box threshold: the raw fused score's max-F1 threshold fitted on the
+# Fishyscapes VAL half (eval_fishyscapes_T122.log, raw row, ubq_local line,
+# input scale 1). Fixed, not tuned on the frames shown, so a frame with
+# nothing above it gets no box -- that is the honest outcome.
+BOX_THRESHOLD = 0.47658
+
+# Real, logged results, oldest first. v1/v2/v3 are local-dev (mit-b2)
+# attempts with only a single best-AUROC number logged; Checkpoint A/B are
+# the RunPod mit-b5 runs with full epoch logs (PPT_Update_Content.html
+# Slide 4). The last entry is the model every current number comes from
+# (train.log).
 EXPERIMENT_HISTORY = [
     {
         "id": "v1",
@@ -77,10 +111,21 @@ EXPERIMENT_HISTORY = [
     },
     {
         "id": "checkpoint_b",
-        "label": "Checkpoint B -- + OOD head LR split (current demo checkpoint)",
+        "label": "Checkpoint B -- + OOD head LR split",
         "description": "Run only after Checkpoint A's confirmed failure, per this project's own sequencing rule. OOD heads given their own 10x-lower LR. Best result at epoch 1 (near-initialization), degrading with further training -- LR split alone does not fully fix the collapse.",
         "best_auroc": 0.6190,
         "epochs": [0.6190, 0.4858, 0.4972, 0.4869, 0.5024, 0.5046, 0.5103, 0.4701],
+    },
+    {
+        "id": "twinguard_2000bank",
+        "label": "TwinGuard 3-head, CARLA + COCO outlier exposure (current demo checkpoint)",
+        "description": "Frozen Cityscapes SegFormer-B5 encoder + 3 independently seeded heads with BCE-with-logits, "
+                       "trained 8 epochs with CutMix pastes from a 2000-object bank (500 CARLA tiles of 45 objects "
+                       "+ 1500 of 3000 COCO cutouts). Epoch 4 selected on the Fishyscapes val half (val AP 0.6839). "
+                       "Fishyscapes test half: AUROC 0.9920, AP 0.6218, FPR@95 0.0287, ECE 0.0004; head "
+                       "disagreement alone AUROC 0.9865; Cityscapes mIoU 0.7616 (train.log).",
+        "best_auroc": 0.9920,
+        "epochs": None,
     },
 ]
 
@@ -126,14 +171,13 @@ def save_grid(array, out_path, grid_w=GRID_W):
         json.dump({"width": grid_w, "height": grid_h, "values": values}, f)
 
 
-def draw_detection_box(raw_image, fused, out_size, percentile=97, min_area_frac=0.0005):
-    """Threshold the fused heatmap at its own top percentile (fused scores run
-    very low in absolute terms -- see check_collapse.py -- so a fixed
-    threshold like 0.5 would find nothing) and draw a box around the largest
-    resulting region. This is the actual "proof a specific object was
-    flagged" panel, not a diffuse heatmap the audience has to interpret."""
-    threshold = np.percentile(fused, percentile)
-    mask = (fused > threshold).astype(np.uint8)
+def draw_detection_box(raw_image, fused, out_size, threshold=BOX_THRESHOLD, min_area_frac=0.0005):
+    """Box the (up to 3) largest regions whose fused score is >= the fixed
+    val-fitted threshold. The old rule used each image's own 97th
+    percentile, which always drew a box even when nothing was there
+    (MISTAKES.md M13).
+    """
+    mask = (fused >= threshold).astype(np.uint8)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     display = resize_for_display(raw_image)
@@ -155,208 +199,184 @@ def draw_detection_box(raw_image, fused, out_size, percentile=97, min_area_frac=
     return Image.fromarray(arr).resize(out_size, Image.BILINEAR), boxes_drawn
 
 
-def score_localization(image_path, label_path, model, device):
-    """How well does the model's own heatmap agree with the real anomaly
-    mask for this frame? Mean score inside the true object minus mean score
-    outside it -- used to pick the clearest real example to lead the demo
-    with, instead of just the frame with the largest ground-truth area."""
-    raw_image = Image.open(image_path).convert("RGB")
-    orig_w, orig_h = raw_image.size
-    label_map = np.array(Image.open(label_path))
+@torch.no_grad()
+def score_maps(model, image_path, shape, device):
+    """-> (fused (H,W), per_head (heads,H,W), seg class map) at label size.
 
-    image_resized = raw_image.resize((config.INPUT_WIDTH, config.INPUT_HEIGHT), Image.BILINEAR)
-    image_t = torch.from_numpy(np.array(image_resized)).permute(2, 0, 1).float().unsqueeze(0) / 255.0
-    image_t = image_t.to(device)
-
-    with torch.no_grad():
-        out = model(image_t)
-    # ood_head.py (exp_coco) now returns raw logits, not sigmoid probabilities
-    # (the BCE-with-logits fix) -- apply sigmoid here so the demo's [0,1]
-    # colormap/threshold code is unaffected by that training-side change.
-    fused = F.interpolate(
-        torch.sigmoid(out["ood_fused"]).unsqueeze(1), size=(orig_h, orig_w), mode="bilinear", align_corners=False
-    ).squeeze().cpu().numpy()
-
-    valid = label_map != 255
-    inside = fused[valid & (label_map == 1)]
-    outside = fused[valid & (label_map == 0)]
-    if inside.size == 0 or outside.size == 0:
-        return -1.0, 0.0, 0.0
-    score_inside, score_outside = float(inside.mean()), float(outside.mean())
-    return score_inside - score_outside, score_inside, score_outside
+    Same order as eval_spatial.fused_scores: upsample the per-head logits,
+    sigmoid, then mean -- so a demo score is the number evaluation reports.
+    """
+    with amp_context(device):
+        out = model(load_image_tensor(image_path, device))
+    logits = F.interpolate(out["ood_logits"].float(), size=shape, mode="bilinear", align_corners=False)
+    per_head = torch.sigmoid(logits).squeeze(0).cpu().numpy()
+    seg = out["seg_logits"].argmax(dim=1).squeeze(0).cpu().numpy()
+    return per_head.mean(axis=0), per_head, seg
 
 
-def pick_demo_pairs(n, model, device):
-    pairs = list_fishyscapes_pairs()
+def pick_demo_pairs(model, device):
+    """Test half only. Ranks every test frame with an anomaly by its own AP
+    and takes the NUM_HIGHEST best plus the NUM_MEDIAN around the median, so
+    the demo shows typical frames, not only a highlight reel. Display only:
+    nothing is fitted or reported from this choice."""
+    _, test_pairs = split_fishyscapes_pairs(list_fishyscapes_pairs())
     scored = []
-    print(f"[demo backend] scoring {len(pairs)} candidate frames for best real-object localization...")
-    for image_path, label_path in pairs:
-        separation, score_inside, score_outside = score_localization(image_path, label_path, model, device)
-        scored.append((separation, image_path, label_path, score_inside, score_outside))
+    print(f"[demo backend] ranking {len(test_pairs)} test-half frames by per-frame AP...")
+    for image_path, label_path in test_pairs:
+        label_map = np.array(Image.open(label_path))
+        anomaly, valid = label_map == 1, label_map != 255
+        if not anomaly.any():
+            continue
+        fused, _, _ = score_maps(model, image_path, label_map.shape, device)
+        hist = ScoreHistogram()
+        hist.update(fused[valid], anomaly[valid].astype(np.int64))
+        scored.append((hist.average_precision(), image_path, label_path))
     scored.sort(key=lambda t: t[0], reverse=True)
-    return scored[:n]
+    highest = scored[:NUM_HIGHEST]
+    mid = len(scored) // 2 - NUM_MEDIAN // 2
+    median = [s for s in scored[mid:mid + NUM_MEDIAN] if s not in highest]
+    return ([(s, "highest AP") for s in highest] + [(s, "median AP") for s in median]), len(scored)
 
 
 def build_manifest():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[demo backend] device: {device}")
+    model = load_trained_model(CHECKPOINT, device)
+    print(f"[demo backend] loaded checkpoint: {CHECKPOINT}")
 
-    model = TwinGuardModel(num_ood_heads=3, ood_seeds=config.OOD_HEAD_SEEDS_3HEAD).to(device)
-    try:
-        model.load_state_dict(torch.load(config.CHECKPOINT_3HEAD, map_location=device, weights_only=True))
-    except RuntimeError as e:
-        raise RuntimeError(
-            f"Failed to load {config.CHECKPOINT_3HEAD} into a model built with "
-            f"USE_DEV_ENCODER={config.USE_DEV_ENCODER} ({config.ENCODER_NAME}). "
-            f"The checkpoint's filename encodes the config it was trained with "
-            f"(config.py's CHECKPOINT_3HEAD) -- check config.py matches the "
-            f"checkpoint you're trying to load before rerunning the server."
-        ) from e
-    model.eval()
-    print(f"[demo backend] loaded checkpoint: {config.CHECKPOINT_3HEAD}")
-
-    os.makedirs(GENERATED_DIR, exist_ok=True)
-    demo_pairs = pick_demo_pairs(NUM_IMAGES, model, device)
-    print(f"[demo backend] precomputing {len(demo_pairs)} demo images (best real localization first)...")
+    os.makedirs(DEMO_DIR, exist_ok=True)
+    chosen, n_ranked = pick_demo_pairs(model, device)
+    print(f"[demo backend] precomputing {len(chosen)} test-half frames...")
 
     manifest = []
-    with torch.no_grad():
-        for idx, (separation, image_path, label_path, score_inside, score_outside) in enumerate(demo_pairs):
-            image_id = f"demo_{idx:02d}"
-            out_dir = os.path.join(GENERATED_DIR, image_id)
-            os.makedirs(out_dir, exist_ok=True)
+    for idx, ((frame_ap, image_path, label_path), selection) in enumerate(chosen):
+        image_id = f"demo_{idx:02d}"
+        out_dir = os.path.join(DEMO_DIR, image_id)
+        os.makedirs(out_dir, exist_ok=True)
 
-            raw_image = Image.open(image_path).convert("RGB")
-            orig_w, orig_h = raw_image.size
-            out_size = (DISPLAY_WIDTH, int(orig_h * DISPLAY_WIDTH / orig_w))
-            label_map = np.array(Image.open(label_path))
-            anomaly_px = int((label_map == 1).sum())
+        raw_image = Image.open(image_path).convert("RGB")
+        orig_w, orig_h = raw_image.size
+        out_size = (DISPLAY_WIDTH, int(orig_h * DISPLAY_WIDTH / orig_w))
+        label_map = np.array(Image.open(label_path))
+        valid, anomaly = label_map != 255, label_map == 1
 
-            image_resized = raw_image.resize((config.INPUT_WIDTH, config.INPUT_HEIGHT), Image.BILINEAR)
-            image_t = torch.from_numpy(np.array(image_resized)).permute(2, 0, 1).float().unsqueeze(0) / 255.0
-            image_t = image_t.to(device)
+        fused, per_head, seg_class_map = score_maps(model, image_path, label_map.shape, device)
+        disagreement = per_head.std(axis=0)
+        disagreement_norm = disagreement / (disagreement.max() + 1e-8)
 
-            out = model(image_t)
+        resize_for_display(raw_image).save(os.path.join(out_dir, "raw.png"))
+        colorize_segmentation(seg_class_map, out_size).save(os.path.join(out_dir, "segmentation.png"))
+        apply_colormap(fused, "inferno", out_size).save(os.path.join(out_dir, "fused.png"))
+        for h in range(per_head.shape[0]):
+            apply_colormap(per_head[h], "inferno", out_size).save(os.path.join(out_dir, f"head{h}.png"))
+        apply_colormap(disagreement_norm, "viridis", out_size).save(os.path.join(out_dir, "disagreement.png"))
+        gt = np.where(anomaly, 255, 0).astype(np.uint8)
+        Image.fromarray(gt).resize(out_size, Image.NEAREST).save(os.path.join(out_dir, "ground_truth.png"))
 
-            seg_class_map = out["seg_logits"].argmax(dim=1).squeeze(0).cpu().numpy()
-            # ood_head.py (exp_coco) now returns raw logits, not sigmoid
-            # probabilities -- sigmoid applied here, at the demo-display
-            # boundary, so it doesn't need to change training/eval code.
-            fused = F.interpolate(
-                torch.sigmoid(out["ood_fused"]).unsqueeze(1), size=(orig_h, orig_w), mode="bilinear", align_corners=False
-            ).squeeze().cpu().numpy()
-            per_head = F.interpolate(
-                torch.sigmoid(out["ood_scores"]), size=(orig_h, orig_w), mode="bilinear", align_corners=False
-            ).squeeze(0).cpu().numpy()
-            disagreement = per_head.std(axis=0)
-            disagreement_norm = disagreement / (disagreement.max() + 1e-8)
+        detection_img, boxes_drawn = draw_detection_box(raw_image, fused, out_size)
+        detection_img.save(os.path.join(out_dir, "detection.png"))
 
-            resize_for_display(raw_image).save(os.path.join(out_dir, "raw.png"))
-            colorize_segmentation(seg_class_map, out_size).save(os.path.join(out_dir, "segmentation.png"))
-            apply_colormap(fused, "inferno", out_size).save(os.path.join(out_dir, "fused.png"))
-            for h in range(3):
-                apply_colormap(per_head[h], "inferno", out_size).save(os.path.join(out_dir, f"head{h}.png"))
-            apply_colormap(disagreement_norm, "viridis", out_size).save(os.path.join(out_dir, "disagreement.png"))
-            gt = np.where(label_map == 1, 255, 0).astype(np.uint8)
-            Image.fromarray(gt).resize(out_size, Image.NEAREST).save(os.path.join(out_dir, "ground_truth.png"))
+        save_grid(fused, os.path.join(out_dir, "fused_grid.json"))
+        for h in range(per_head.shape[0]):
+            save_grid(per_head[h], os.path.join(out_dir, f"head{h}_grid.json"))
 
-            detection_img, boxes_drawn = draw_detection_box(raw_image, fused, out_size)
-            detection_img.save(os.path.join(out_dir, "detection.png"))
+        url = f"/static/generated/test_half/{image_id}"
+        score_inside = float(fused[valid & anomaly].mean())
+        score_outside = float(fused[valid & ~anomaly].mean())
+        manifest.append({
+            "id": image_id,
+            "title": os.path.basename(image_path),
+            "selection": selection,
+            "frame_ap": round(float(frame_ap), 4),
+            "anomaly_pixels": int(anomaly.sum()),
+            "score_inside": round(score_inside, 4),
+            "score_outside": round(score_outside, 4),
+            "boxes_drawn": boxes_drawn,
+            "panels": {name: f"{url}/{name}.png" for name in
+                       ["raw", "detection", "segmentation", "fused", "ground_truth",
+                        "head0", "head1", "head2", "disagreement"]},
+            "grids": {name: f"{url}/{name}_grid.json" for name in ["fused", "head0", "head1", "head2"]},
+        })
+        print(f"[demo backend]   {image_id} [{selection}] {os.path.basename(image_path)} "
+              f"AP={frame_ap:.4f} inside={score_inside:.4f} outside={score_outside:.4f} "
+              f"boxes={boxes_drawn}")
 
-            save_grid(fused, os.path.join(out_dir, "fused_grid.json"))
-            for h in range(3):
-                save_grid(per_head[h], os.path.join(out_dir, f"head{h}_grid.json"))
-
-            manifest.append({
-                "id": image_id,
-                "title": os.path.basename(image_path),
-                "anomaly_pixels": anomaly_px,
-                "score_inside": round(score_inside, 4),
-                "score_outside": round(score_outside, 4),
-                "boxes_drawn": boxes_drawn,
-                "panels": {
-                    "raw": f"/static/generated/{image_id}/raw.png",
-                    "detection": f"/static/generated/{image_id}/detection.png",
-                    "segmentation": f"/static/generated/{image_id}/segmentation.png",
-                    "fused": f"/static/generated/{image_id}/fused.png",
-                    "ground_truth": f"/static/generated/{image_id}/ground_truth.png",
-                    "head0": f"/static/generated/{image_id}/head0.png",
-                    "head1": f"/static/generated/{image_id}/head1.png",
-                    "head2": f"/static/generated/{image_id}/head2.png",
-                    "disagreement": f"/static/generated/{image_id}/disagreement.png",
-                },
-                "grids": {
-                    "fused": f"/static/generated/{image_id}/fused_grid.json",
-                    "head0": f"/static/generated/{image_id}/head0_grid.json",
-                    "head1": f"/static/generated/{image_id}/head1_grid.json",
-                    "head2": f"/static/generated/{image_id}/head2_grid.json",
-                },
-            })
-            print(
-                f"[demo backend]   {image_id} -> {os.path.basename(image_path)} "
-                f"(separation={separation:.4f}, inside={score_inside:.4f}, outside={score_outside:.4f}, "
-                f"boxes={boxes_drawn})"
-            )
-
-    manifest_path = os.path.join(GENERATED_DIR, "manifest.json")
-    with open(manifest_path, "w") as f:
+    with open(os.path.join(DEMO_DIR, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)
-    print(f"[demo backend] manifest written to {manifest_path}")
+    with open(os.path.join(DEMO_DIR, "meta.json"), "w") as f:
+        json.dump({"checkpoint": CHECKPOINT, "checkpoint_mtime": os.path.getmtime(CHECKPOINT),
+                   "cache_version": CACHE_VERSION, "test_frames_ranked": n_ranked,
+                   "rule": f"Fishyscapes test half; {NUM_HIGHEST} highest per-frame AP + "
+                           f"{NUM_MEDIAN} around the median"}, f, indent=2)
+    print(f"[demo backend] manifest written to {DEMO_DIR}")
     return manifest
 
 
 def build_training_samples():
-    """Not a live CARLA feed and not a recorded video -- these are the actual
-    50 static single-frame synthetic anomalies used to train the OOD heads
-    (see generate_anomalies.py). Each is a different random object at a
-    different simulated moment, not a continuous recording of one scene --
-    see the plan doc's Novelty 8 for why a real video sequence doesn't exist
-    yet. This gallery exists so a reviewer can see real training-data
-    examples, honestly labeled as static synthetic samples.
+    """Real CutMix composites from the training pipeline: Cityscapes frames
+    with objects from the 2000-object bank (CARLA tiles + COCO cutouts,
+    config.ANOMALY_SOURCE) pasted on road/sidewalk, and the mask the heads
+    were told is anomalous. Ported from exp_v2. The old gallery overlaid the
+    45 curated CARLA frames' masks, several of which are misaligned
+    (MISTAKES.md M10), and called them the training data; the bank only cuts
+    tiles from them. Drawn from the val split with a fixed seed so the
+    gallery is reproducible; the training split is composited the same way.
+    Written to its own folder, so the old gallery stays on disk untouched.
     """
-    images_dir = config.CARLA_IMAGES_DIR
-    masks_dir = config.CARLA_MASKS_DIR
-    out_root = os.path.join(GENERATED_DIR, "training")
-    os.makedirs(out_root, exist_ok=True)
+    import random
 
-    all_images = sorted(f for f in os.listdir(images_dir) if f.endswith(".png"))
-    step = max(1, len(all_images) // NUM_TRAINING_SAMPLES)
-    picked = all_images[::step][:NUM_TRAINING_SAMPLES]
+    from scipy import ndimage
+
+    from data.cityscapes_dataset import CityscapesDataset
+    from data.cutmix import CutMixAugmentedDataset
+    from data.transforms import denormalize_imagenet
+
+    random.seed(config.GLOBAL_SEED)   # CutMix draws objects, scales, positions with `random`
+    np.random.seed(config.GLOBAL_SEED)
+    ds = CutMixAugmentedDataset(CityscapesDataset(split="val", normalize=False), p=1.0)
+    os.makedirs(TRAINING_DIR, exist_ok=True)
+    rng = np.random.default_rng(config.GLOBAL_SEED)
 
     samples = []
-    for idx, fname in enumerate(picked):
-        sample_id = f"sample_{idx:02d}"
-        out_dir = os.path.join(out_root, sample_id)
-        os.makedirs(out_dir, exist_ok=True)
-
-        num = fname.replace("anomaly_", "").replace(".png", "")
-        mask_path = os.path.join(masks_dir, f"anomaly_mask_{num}.npy")
-
-        raw = Image.open(os.path.join(images_dir, fname)).convert("RGB")
-        w, h = raw.size
-        out_size = (360, int(h * 360 / w))
-        resize_for_display(raw).resize(out_size, Image.BILINEAR).save(os.path.join(out_dir, "raw.png"))
-
-        mask = np.load(mask_path)
-        overlay_arr = np.array(raw).copy()
+    for idx, i in enumerate(rng.choice(len(ds), NUM_TRAINING_SAMPLES, replace=False)):
+        image_t, _, ood = ds[int(i)]
+        rgb = (denormalize_imagenet(image_t).permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+        mask = ood.numpy() > 0.5
+        overlay = rgb.copy()
         highlight = np.array([61, 90, 254])  # frontend's --accent (#3D5AFE), index.css
-        overlay_arr[mask == 1] = (0.4 * overlay_arr[mask == 1] + 0.6 * highlight).astype(np.uint8)
-        Image.fromarray(overlay_arr).resize(out_size, Image.BILINEAR).save(os.path.join(out_dir, "overlay.png"))
-
+        overlay[mask] = (0.35 * overlay[mask] + 0.65 * highlight).astype(np.uint8)
+        sample_id = f"sample_{idx:02d}"
+        out_dir = os.path.join(TRAINING_DIR, sample_id)
+        os.makedirs(out_dir, exist_ok=True)
+        size = (360, int(rgb.shape[0] * 360 / rgb.shape[1]))
+        Image.fromarray(rgb).resize(size, Image.BILINEAR).save(os.path.join(out_dir, "raw.png"))
+        Image.fromarray(overlay).resize(size, Image.BILINEAR).save(os.path.join(out_dir, "overlay.png"))
+        n_obj = int(ndimage.label(mask)[1])
+        url = f"/static/generated/training_cutmix/{sample_id}"
         samples.append({
             "id": sample_id,
-            "source_file": fname,
-            "panels": {
-                "raw": f"/static/generated/training/{sample_id}/raw.png",
-                "overlay": f"/static/generated/training/{sample_id}/overlay.png",
-            },
+            "source_file": f"Cityscapes val #{int(i)} + {n_obj} pasted object(s), "
+                           f"{mask.mean():.2%} of pixels",
+            "panels": {"raw": f"{url}/raw.png", "overlay": f"{url}/overlay.png"},
         })
 
-    samples_path = os.path.join(out_root, "samples.json")
-    with open(samples_path, "w") as f:
+    with open(os.path.join(TRAINING_DIR, "samples.json"), "w") as f:
         json.dump(samples, f, indent=2)
-    print(f"[demo backend] {len(samples)} training samples written to {out_root}")
+    print(f"[demo backend] {len(samples)} CutMix training samples written to {TRAINING_DIR}")
     return samples
+
+
+def _cache_is_current():
+    """Reuse panels only if they were built by this pipeline version from
+    this exact checkpoint file."""
+    meta_path = os.path.join(DEMO_DIR, "meta.json")
+    if not (os.path.exists(meta_path) and os.path.exists(os.path.join(DEMO_DIR, "manifest.json"))):
+        return False
+    with open(meta_path) as f:
+        meta = json.load(f)
+    return (meta.get("cache_version") == CACHE_VERSION
+            and meta.get("checkpoint") == CHECKPOINT
+            and abs(meta.get("checkpoint_mtime", 0) - os.path.getmtime(CHECKPOINT)) < 1)
 
 
 app = FastAPI(title="TwinGuard Demo")
@@ -369,15 +389,16 @@ _training_samples_cache = None
 def startup():
     global _manifest_cache, _training_samples_cache
 
-    manifest_path = os.path.join(GENERATED_DIR, "manifest.json")
-    if os.path.exists(manifest_path):
-        print("[demo backend] found existing precomputed manifest, reusing it (delete static/generated/ to force a rebuild)")
-        with open(manifest_path) as f:
+    if not os.path.exists(CHECKPOINT):
+        raise RuntimeError(f"no checkpoint at {CHECKPOINT} (config.PRIMARY_RAW) -- run from the repo root")
+    if _cache_is_current():
+        print(f"[demo backend] reusing precomputed test-half panels for {CHECKPOINT}")
+        with open(os.path.join(DEMO_DIR, "manifest.json")) as f:
             _manifest_cache = json.load(f)
     else:
         _manifest_cache = build_manifest()
 
-    samples_path = os.path.join(GENERATED_DIR, "training", "samples.json")
+    samples_path = os.path.join(TRAINING_DIR, "samples.json")
     if os.path.exists(samples_path):
         with open(samples_path) as f:
             _training_samples_cache = json.load(f)

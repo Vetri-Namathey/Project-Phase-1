@@ -10,10 +10,11 @@ Run: python validate_metrics.py
 
 import numpy as np
 from scipy.spatial.distance import directed_hausdorff
-from sklearn.metrics import (average_precision_score, roc_auc_score,
-                             roc_curve)
+from sklearn.metrics import (average_precision_score, precision_recall_curve,
+                             roc_auc_score, roc_curve)
 
-from metrics import ConfusionMatrix, ScoreHistogram, boundary_band, ubq
+from metrics import (ConfusionMatrix, ScoreHistogram, boundary_band, paired_bootstrap_ap,
+                     ubq, ubq_local)
 
 TOLERANCE = 1e-4
 
@@ -178,6 +179,134 @@ def main():
         all_ok = False
     print(f"  {flag} threshold_at_tpr  thresh={thresh:.5f}  reproduced_tpr={reproduced_tpr:.4f}  "
           f"fpr_at_tpr={expected_fpr:.5f}  reproduced_fpr={reproduced_fpr:.5f}  d={fpr_delta:.2e}")
+
+    # 6e. threshold_at_max_f1 agrees with sklearn's precision-recall curve.
+    prec, rec, thr = precision_recall_curve(labels, scores)
+    f1 = 2 * prec[:-1] * rec[:-1] / np.clip(prec[:-1] + rec[:-1], 1e-12, None)
+    ref_best_f1 = float(f1.max())
+    t = hist.threshold_at_max_f1()
+    pred_positive = scores >= t
+    tp = (pred_positive & (labels == 1)).sum()
+    got_f1 = 2 * tp / (pred_positive.sum() + labels.sum())
+    ok = abs(got_f1 - ref_best_f1) < 1e-3
+    flag = "OK " if ok else "FAIL"
+    if not ok:
+        all_ok = False
+    print(f"  {flag} threshold_at_max_f1  t={t:.5f}  F1 at t={got_f1:.5f}  "
+          f"sklearn best F1={ref_best_f1:.5f}  d={abs(got_f1 - ref_best_f1):.2e}")
+
+    # 6f. ubq_local: exact on a hand-built case, and against brute force.
+    #     A 20x20 square object; prediction = the square shifted 3px right.
+    gt = np.zeros((80, 80), bool)
+    gt[30:50, 30:50] = True
+    pred = np.zeros_like(gt)
+    pred[30:50, 33:53] = True
+    objs, far_px, pred_px = ubq_local(pred, gt, roi_px=10, tolerance_px=2)
+    got = objs[0]
+    # Spill: columns 50,51,52 at distance 1,2,3 -> mean 2. Miss: columns
+    # 30,31,32 at distance 3,2,1 -> 6 px per row / 400 object pixels.
+    exp_spill, exp_miss = 2.0, (3 + 2 + 1) * 20 / 400
+    ok = (len(objs) == 1 and got["detected"] and abs(got["spill_px"] - exp_spill) < 1e-9
+          and abs(got["miss_px"] - exp_miss) < 1e-9 and far_px == 0
+          and 0.0 < got["boundary_f1"] < 1.0)
+    same = ubq_local(gt, gt)[0][0]
+    ok = ok and same["spill_px"] == 0.0 and same["miss_px"] == 0.0 and same["boundary_f1"] == 1.0
+    far = pred.copy()
+    far[0:2, 0:5] = True                                   # 10 px far false alarm
+    _, far_px, far_pred_px = ubq_local(far, gt, roi_px=10)
+    ok = ok and far_px == 10 and far_pred_px == far.sum()
+    # A second object that is completely missed must be counted as missed and
+    # must not change the first object's scores -- the leak this version fixes.
+    gt2 = gt.copy()
+    gt2[5:12, 65:75] = True
+    objs2, _, _ = ubq_local(pred, gt2, roi_px=10, tolerance_px=2)
+    first = [o for o in objs2 if o["detected"]]
+    ok = ok and len(objs2) == 2 and len(first) == 1 and first[0] == got
+    flag = "OK " if ok else "FAIL"
+    if not ok:
+        all_ok = False
+    print(f"  {flag} ubq_local exact case  {got}  far_fp_px={far_px}  "
+          f"missed 2nd object isolated={len(first) == 1 and first[0] == got}")
+
+    for trial in range(3):
+        g = np.zeros((40, 40), bool)
+        g[10 + trial:25, 12:28 - trial] = True
+        p = rng.random((40, 40)) < 0.08
+        p[12:24, 14:26] = True
+        objs, far_px, pred_px = ubq_local(p, g, roi_px=6, tolerance_px=2)
+        got = objs[0]
+        gpts, ppts = np.argwhere(g), np.argwhere(p)
+        d_to_g = np.sqrt(((ppts[:, None, :] - gpts[None, :, :]) ** 2).sum(-1)).min(1)
+        near = ppts[d_to_g <= 6]
+        d_to_p = np.sqrt(((gpts[:, None, :] - near[None, :, :]) ** 2).sum(-1)).min(1)
+        outside = (d_to_g > 0) & (d_to_g <= 6)
+        ref_spill = d_to_g[outside].mean() if outside.any() else 0.0
+        ref_miss = d_to_p.mean()
+        d = max(abs(got["spill_px"] - ref_spill), abs(got["miss_px"] - ref_miss),
+                abs(far_px - int((d_to_g > 6).sum())), abs(pred_px - len(ppts)))
+        ok = d < 1e-6
+        flag = "OK " if ok else "FAIL"
+        if not ok:
+            all_ok = False
+        print(f"  {flag} ubq_local vs brute force (trial {trial})  max d={d:.2e}")
+
+    # 7. Edge cases (MISTAKES.md standing rule 5) for the metrics PLAN.md P1
+    #    depends on: ubq_local on degenerate masks, and the paired AP
+    #    bootstrap on identical inputs.
+    print("\nubq_local edge cases + paired_bootstrap_ap")
+    gt = np.zeros((40, 40), bool)
+    gt[10:20, 10:20] = True
+    # 7a. Empty GT: no objects to score; every predicted pixel counts as far.
+    pred = np.zeros_like(gt)
+    pred[0:3, 0:3] = True
+    objs, far_px, pred_px = ubq_local(pred, np.zeros_like(gt))
+    ok_a = objs == [] and far_px == 9 and pred_px == 9
+    # 7b. Empty prediction: the object is counted, as missed.
+    objs, far_px, pred_px = ubq_local(np.zeros_like(gt), gt)
+    ok_b = objs == [{"detected": False}] and far_px == 0 and pred_px == 0
+    # 7c. Single-pixel object predicted exactly: zero spill/miss, F1 1.
+    one = np.zeros_like(gt)
+    one[25, 25] = True
+    o = ubq_local(one, one)[0][0]
+    ok_c = (o["detected"] and o["spill_px"] == 0.0 and o["miss_px"] == 0.0
+            and o["boundary_f1"] == 1.0)
+    # 7d. Object touching the image border: the crop window is clipped, and
+    #     an exact prediction still scores F1 1 -- no crash, no NaN.
+    border = np.zeros_like(gt)
+    border[0:8, 30:40] = True
+    o = ubq_local(border, border)[0][0]
+    ok_d = o["detected"] and o["boundary_f1"] == 1.0 and o["miss_px"] == 0.0
+    vals = [v for o in (ubq_local(pred, gt)[0] + ubq_local(one, one)[0]
+                        + ubq_local(border, border)[0]) for v in o.values()]
+    ok_nan = not any(isinstance(v, float) and np.isnan(v) for v in vals)
+    ok = ok_a and ok_b and ok_c and ok_d and ok_nan
+    flag = "OK " if ok else "FAIL"
+    if not ok:
+        all_ok = False
+    print(f"  {flag} ubq_local edge cases: empty GT={ok_a} empty pred={ok_b} "
+          f"single pixel={ok_c} border object={ok_d} no NaN={ok_nan}")
+    print(f"       3x3 pred ~10 px off the object (inside roi=32, so detected, F1 0): "
+          f"{ubq_local(pred, gt)}")
+
+    # 7e. paired_bootstrap_ap(a, a): difference exactly 0, CI exactly [0, 0].
+    per_image = []
+    for _ in range(6):
+        y = (rng.random(5000) < 0.05).astype(np.int64)
+        s = np.clip(rng.normal(np.where(y == 1, 0.7, 0.3), 0.2), 0, 1)
+        h = ScoreHistogram()
+        h.update(s, y)
+        per_image.append((h.pos, h.neg))
+    res = paired_bootstrap_ap(per_image, per_image, n_resamples=200)
+    pooled = ScoreHistogram()
+    pooled.pos = sum(p for p, _ in per_image)
+    pooled.neg = sum(n for _, n in per_image)
+    ok = (res["diff"] == 0.0 and res["lo"] == 0.0 and res["hi"] == 0.0
+          and abs(res["ap_a"] - pooled.average_precision()) < 1e-12)
+    flag = "OK " if ok else "FAIL"
+    if not ok:
+        all_ok = False
+    print(f"  {flag} paired_bootstrap_ap(a, a)  diff={res['diff']}  "
+          f"CI [{res['lo']}, {res['hi']}]  AP={res['ap_a']:.6f} (= pooled AP)")
 
     print("\n" + ("ALL METRICS MATCH SKLEARN" if all_ok else "MISMATCH -- DO NOT TRAIN"))
     return 0 if all_ok else 1

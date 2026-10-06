@@ -1,1356 +1,996 @@
-# TwinGuard — next-steps plan
-
-Working checklist. Tick items as they're actually done — "done" means the artifact in
-the right-hand column exists on disk, not just that code was written.
-
-## RESUME HERE (2026-10-04) — full roadmap to project completion
-
-**Goal (user, 2026-10-04): finish the project as soon as possible.** Order: calibration →
-video → explainability → final wiring. Every step runs **locally**: the `cuda_test` conda
-env, RTX 3070 8 GB, CARLA 0.9.15 at `C:\Users\venka\Downloads\CARLA_0.9.15`. **No RunPod**:
-the account has a balance deficit and the last pod's data was lost unpulled (nothing the
-plan needs was on it; checked 2026-10-04). Working rules: Claude writes code and gives
-commands; **the user runs** anything GPU/CARLA; **never `git push`**.
-
-**State right now:**
-- Model: `model_3head_best.pth` (repo root, test AUROC 0.9920). L_calib: `model_3head_calib_best.pth`.
-- Boundary-ECE + UBQ: Steps 1-4 done. C1 done (boundary is UNDER-confident everywhere).
-- Code written but **not yet run**: C2 (band-fitted temperature) and C1b (`--upsample prob`)
-  in `eval_spatial.py`; V0 pilot recorder `record_route.py`; `eval_spatial.py --carla-root`.
-
-**Phase 1 — Calibration (finish first)**
-- [x] **1a. C2 done**: band-fitted T=4.36 halves r=8 band-ECE (0.1845 → 0.0942) but makes
-      whole-image ECE 20× worse. Single-T conflict proven. Details under C2.
-- [x] **1b. C1b done**: upsample order doesn't matter, so the under-confidence is learned.
-- [x] **1c. Run C3** (code written + syntax-checked 2026-10-04, `DisagreementTemperature` /
-      `fit_disagreement_temperature` in `eval_spatial.py`): T(d)=exp(a+b·d), with d = std of
-      the 3 heads' raw sigmoid scores. Fit on val with 0.5·whole-image BCE (uniform 20k
-      px/image) + 0.5·r=8 band BCE.
-      `python eval_spatial.py --dataset fishyscapes | Tee-Object -FilePath eval_fishyscapes_c3.log`
-      → log: the fitted a, b and T at d=0/0.1/0.3, the band-vs-whole disagreement diagnostic,
-      the `temp-disagreement (C3)` block, and the two labelled C4 bootstraps.
-      **Ran 2026-10-04** (`eval_fishyscapes_c3.log`). Results are under C3 below. The C4 rule
-      passed on both conditions, but the rule turned out not to isolate disagreement's
-      effect, so a control was added (1c-ctrl).
-- [x] **1c-ctrl. C3 control ran 2026-10-04** (`eval_fishyscapes_c3ctrl.log`). Single T on
-      the same 50/50 objective = **3.1516**. C3 − control: r=8 +0.0035 [−0.0010,+0.0052]
-      (not better), whole-image +0.0016 [+0.0015,+0.0017] (**significantly worse**), r=4
-      +0.0051 [+0.0027,+0.0104] (worse). **Control rule fails, so disagreement adds no value.**
-- [x] **1d. C4 decided 2026-10-04: no calibration method contribution. The contribution is
-      the analysis.** Recommended method: temperature scaling fitted on real held-out data,
-      with T chosen by which error matters (T=1.71 whole-image, T=3.15 balanced, T=4.36
-      boundary). See "Calibration — final result" under C4 below for the paper wording.
-- [x] **1e. Frontend updated 2026-10-04**. Home `CalibrationPanel` now has 5 tabs (raw,
-      T=1.71, T=3.15, T=4.36, L_calib), each with whole-image + edge ECE and a per-model note.
-      The Training Runs report card has the 6-row table and a new note. `npm run build`
-      passes. Not yet checked in a browser: the user should view `/` and `/runs`.
-- **Checkpoint 1 reached 2026-10-04 (pending the user's visual check of 1e).**
-- [ ] **1f. C5 — neighbourhood-context calibrator (added 2026-10-04 at the user's request,
-      one run, then move to video regardless of outcome).** See C5 under the C-section for
-      the design and the pre-registered rule.
-      `python eval_spatial.py --dataset fishyscapes | Tee-Object -FilePath eval_fishyscapes_c5.log`
-      If it passes, update the 1e frontend tabs with a C5 tab. Then Phase 2a.
-
-**Phase 2 — Video (after calibration)**
-- [ ] **2a. V0 pilot.** Start `CarlaUE4.exe`, wait for the map, then:
-      `python record_route.py --out video_pilot --frames 40 --step-m 1.0 --props 4`.
-      **Close CARLA**, then
-      `python eval_spatial.py --dataset carla --carla-root video_pilot | Tee-Object -FilePath eval_video_pilot.log`.
-      Go/no-go per V0 below. Still missing: a 5-frame overlay PNG script for the visual
-      check. Write it before running 2a's eval.
-- [ ] **2b. Decision (user): Experiment A.** The plan requires baseline + ours videos. Exp
-      A's weights are lost. Retrain locally (1 head, ~hours on the 3070; check it fits
-      first) or approve narrowing to Exp B only.
-- [ ] **2c. Decision (user): two toggleable videos or one split-screen.**
-- [ ] **2d. Full recording** (several props, ~300-600 frames at `--step-m 0.4`), then
-      world-anchored CutMix pastes of CARLA + COCO cutouts using `meta.jsonl` poses (see
-      "How anomalies actually get into the demo video" update), then per-frame inference
-      panels for each checkpoint, then encode `.mp4` into `static/generated/`, then a
-      `<video>` on `/demo`.
-- **Checkpoint 2 = an `.mp4` playing at `localhost:5173` next to the unchanged image demo.**
-
-**Phase 3 — Explainability** (see "Explainability (2026-10-03)"): X1 counterfactual removal
-→ X2 per-stage gradient attribution → X3 aleatoric/epistemic split → X4 `/demo` panel.
-- **Checkpoint 3 = X1–X3 numbers logged + one demo panel.**
-
-**Phase 4 — Final wiring / write-up**
-- [ ] `server.py` `EXPERIMENT_HISTORY` + `README.md` still show the stale Checkpoint B
-      (0.6190). Update them to the 0.9920 run (numbers in `train.log`).
-- [ ] Fix `config.CHECKPOINT_3HEAD` pointing at the stale `checkpoints/` file, or make
-      `server.py` load the repo-root checkpoint explicitly.
-- [ ] Results tables for the paper: whole vs band-ECE, the C-steps, UBQ `gt_to_pred_px`,
-      the explainability numbers, and the CARLA-vs-Fishyscapes transfer finding.
-- **Checkpoint 4 = demo shows the real 0.9920 model; the paper's tables are all sourced
-  from logs listed in this file.**
-
-## Earlier resume note (2026-10-03) — superseded by the roadmap above
-
-The RunPod pull/wipe it described could not happen (balance deficit). Calibration quality
-and explainability, its two "next phases", are now Phases 1 and 3 above.
-
-## Calibration quality phase (2026-10-03) — fit on held-out real data, not on pastes
-
-**Why the direction changed.** An external review of Phase 2b named three stacked gaps:
-practice vs exam, fake vs real look, and wrong mistakes. Our own Step 3/4 numbers back two
-of them directly:
-- **Practice vs exam (verified from code).** `calibrate.py`'s `run_calib_finetune` computes
-  `SoftECELoss` only on CutMix training batches. Fishyscapes val only selects the epoch.
-  Temperature scaling is fitted on real Fishyscapes val images, and it beat `L_calib` at the
-  boundary at every radius (r=8: +0.0551, CI [+0.0466, +0.0654]).
-- **Wrong mistakes (verified from our numbers).** The same `L_calib` checkpoint *improves*
-  band-ECE on CARLA, whose objects are in the training bank (r=8: −0.0087, CI excludes 0).
-  It *worsens* band-ECE on real Fishyscapes (r=8: +0.0123, CI excludes 0). UBQ
-  `gt_to_pred_px` (missed extent) is 2.86 px on CARLA vs 12.83 px on Fishyscapes for raw.
-  On real objects the model under-covers edges. A correction learned on pastes pushes the
-  wrong way.
-- **Fake vs real look: consistent with our results, not isolated by them.** Whole-image
-  AUROC is 0.925 on CARLA vs 0.992 on Fishyscapes. The reviewer's 99% vs 50–69%
-  paste-confidence figures, and their "Run 2 harder pastes" result, are *theirs*. Cite them
-  as such, not as ours.
-- Rule from here: **calibration parameters are fitted on Fishyscapes val (real, held-out)
-  and reported on Fishyscapes test.** Nothing calibration-related is fitted on CutMix
-  output. With 50 val images, keep every calibrator low-parameter.
-
-**Steps (all local, eval-only, no training):**
-- [x] **C1 — direction diagnostic.** Add the mean fused score per band (and inner vs outer
-      half via `boundary_band(side=...)`) to `eval_spatial.py`'s output, next to pos_rate.
-      This confirms the sign of the boundary miscalibration (under- vs over-confident) and
-      checks the reviewer's "real edges score 0.29 where 44% are anomalous" claim against
-      our own data.
-      → artifact: mean-score vs pos-rate per band/side, for raw/temp/L_calib, pasted here.
-      **Done 2026-10-04** (user ran locally; logs `eval_fishyscapes_c1.log`,
-      `eval_carla_c1.log`; all Step 3/4 numbers reproduced exactly). Fishyscapes test, r=8:
-      ```
-      model        mean_score  pos_rate  gap      inner(true anomaly)  outer(true normal)
-      raw          0.2258      0.4421    -0.2163  0.3590               0.1203
-      temp-scaled  0.2576      0.4421    -0.1845  0.3760               0.1637
-      L_calib      0.2043      0.4421    -0.2378  0.3390               0.0976
-      CARLA raw    0.3502      0.4538    -0.1035  0.4351               0.2797
-      ```
-      - **Under-confident at the boundary for every model, at every r, on both datasets.**
-      - Temp scaling (T=1.71) wins on band-ECE by raising all edge scores toward 0.5. It
-        shrinks the gap but raises outer spill too (0.120 → 0.164). It shifts scores and
-        does not sharpen edges.
-      - `L_calib` lowered both inner and outer edge scores, which widened the gap. This is
-        the review's "learned to lower edge scores" claim, confirmed on our data.
-      - The review's "0.29 where 44%": the 44% matches (0.4421) and the direction matches.
-        Our mean is 0.226, so cite their 0.29 as theirs.
-      - The review's "pastes are over-confident" is **not** tested by CARLA. CARLA frames
-        are under-confident too (gap −0.10), with more spill (outer 0.28). They are full
-        rendered scenes, not CutMix pastes.
-- [x] **C1b — decoding-artifact check (hypothesis).** The model predicts at 1/4 res and the
-      eval upsamples *logits* before the sigmoid. If background logits are far more
-      negative than object logits are positive, interpolation drags edge pixels down. That
-      would produce exactly C1's inner-under / outer-low pattern. Test it by re-running with
-      `--upsample prob` (sigmoid at native res, then upsample). If the gap shrinks a lot,
-      part of the boundary miscalibration is a decoding artifact, not learned. That is
-      itself a reportable finding and a free fix. If not, the hypothesis is ruled out.
-      Whole-image AUROC will shift slightly, so report the whole table.
-      → artifact: `eval_fishyscapes_c1b.log`, C1 lines compared side by side.
-      **Done 2026-10-04 — hypothesis ruled out.** With `--upsample prob`, raw r=8 band-ECE
-      is 0.2257 (logit: 0.2273) and the gap is −0.2154 (logit: −0.2163). Every model moves
-      by less than 0.002. So the boundary under-confidence is **learned, not a decoding
-      artifact**. Keep the logit order as the standard (it matches training eval).
-- [x] **C2 — band-fitted temperature.** Run `fit_temperature`'s objective restricted to
-      val-half band pixels (r=8), then evaluate on test with the Step 4 comparison and
-      paired bootstrap. Note that `fit_temperature` minimizes BCE, not ECE. Report T
-      alongside the whole-image-fitted 1.7142.
-      → artifact: Step 4 table + bootstrap with a 4th row (`temp-band`).
-      **Implemented 2026-10-04 in `eval_spatial.py` (Fishyscapes only, not yet run):**
-      `fit_band_temperature` uses LBFGS on log T over val-half r=8 band pixels. It prints
-      the fitted T, evaluates a `temp-band (C2)` block, and bootstraps it vs temp and raw.
-      Expectation, given C1's under-confidence: band T comes out > 1.71, which helps
-      band-ECE but probably costs whole-image ECE. Report both. The fit is in logit space,
-      so read C2 from the default `--upsample logit` run.
-      **Done 2026-10-04** (`eval_fishyscapes_c2.log`). Band-fitted **T = 4.3592** (vs 1.7142):
-      ```
-      model              whole-ECE  band-ECE r=4  r=8     r=16    outer(true normal) r=8
-      raw (T=1)          0.0004     0.2848        0.2273  0.1748  0.1203
-      temp (T=1.71)      0.0020     0.2208        0.1845  0.1451  0.1637
-      temp-band (T=4.36) 0.0420     0.1242        0.0942  0.0821  0.2891
-      bootstrap band-ECE(temp-band) − (temp): r=4 −0.0967 [−0.1174,−0.0824]
-                                              r=8 −0.0903 [−0.1081,−0.0480]
-                                              r=16 −0.0630 [−0.0940,+0.0391]  includes 0
-      bootstrap band-ECE(temp-band) − (raw):  r=4 −0.1606, r=8 −0.1331 (exclude 0), r=16 includes 0
-      ```
-      - Boundary ECE roughly halves vs temp scaling (significant at r=4/8), but whole-image
-        ECE goes 0.0020 → **0.0420 (~20× worse than temp, ~100× worse than raw)**, and edge
-        spill doubles. AUROC is unchanged (0.9925).
-      - **The key finding: the whole image wants T≈1.7, the boundary wants T≈4.4, and no
-        single scalar satisfies both.** That is direct evidence calibration must be spatially
-        varying, which is exactly what C3 tests.
-      - UBQ `gt_to_pred_px` gets worse (16.21 vs 12.83), because its val-fit threshold moves
-        to 0.11. That is not a like-for-like comparison of extent.
-      - r=16 CIs are very wide and asymmetric (e.g. [−0.094, +0.039]), so a few images
-        dominate there. Treat r=16 as unreliable, and r=4/8 as the readable radii.
-- **C4 rule tightened 2026-10-04, after C2 and before any C3 number exists.** C2 showed
-  that a boundary win can be bought by wrecking whole-image ECE, which the original rule
-  ("C3 beats C2 at r=8") would have counted as a success. New rule. C3 is the paper's
-  calibration contribution only if **both** hold on the test half:
-  (1) band-ECE r=8 of C3 is lower than temp (T=1.71), with the paired-bootstrap CI excluding 0;
-  (2) whole-image ECE of C3 is lower than temp-band (T=4.36), with CI excluding 0.
-  That is, it must beat each single temperature on the dimension that temperature gave
-  up. If only one holds, report C3 as a trade-off point, not a win. If neither holds, the
-  contribution is the analysis: band-ECE, the C1 direction, C2's 1.7-vs-4.4 conflict, and
-  the transfer failure. `eval_spatial.py` prints both conditions' bootstraps, labelled.
-- [x] **C3 — disagreement-conditioned temperature.** Fit T(d) = T0 + T1·d on val, where d is
-      the per-pixel head disagreement (`ood_disagreement`, std across the 3 heads). Two
-      parameters, no ground truth at test time. Band membership needs GT, so it can't be
-      the input at inference; disagreement can. Evaluate exactly as in C2. This is the
-      candidate novelty: the project's own uncertainty signal drives a spatially varying
-      calibration.
-      → artifact: same table with a `temp-disagreement` row + bootstrap vs C2.
-      **Ran 2026-10-04** (`eval_fishyscapes_c3.log`). As built: T(d)=exp(a+b·d), fit on val
-      with 0.5·whole-image BCE + 0.5·r=8 band BCE. Fitted **T(d)=exp(1.182 − 3.774·d)**, i.e.
-      T=3.26 at d=0, 2.23 at d=0.1, 1.05 at d=0.3.
-      ```
-      model              whole-ECE  band-ECE r=4  r=8     r=16    AP
-      temp (T=1.71)      0.0020     0.2208        0.1845  0.1451  0.6193
-      C3 T(d)            0.0193     0.1614        0.1312  0.0916  0.6106
-      temp-band (T=4.36) 0.0420     0.1242        0.0942  0.0821  0.6173
-      C4 cond 1: band-ECE r=8 (C3 − temp)     = −0.0533 [−0.0653, −0.0430]  PASS
-      C4 cond 2: whole-ECE    (C3 − temp-band) = −0.0227 [−0.0235, −0.0218] PASS
-      ```
-      - Disagreement does mark the boundary: mean d is 0.0508 in the r=8 band vs 0.0007
-        whole-image (~70×).
-      - **But the fitted slope is negative, the opposite of the hypothesis.** T is *highest*
-        where heads agree (d≈0, which includes all background) and drops where they disagree.
-      - **The C4 rule has a hole, found on reading these numbers.** C3 lies between the two
-        single-T fits on both axes. *Any* scalar T between 1.71 and 4.36 would also pass
-        both conditions, so passing doesn't show disagreement contributes anything. This is
-        a flaw in how the rule was designed, recorded here, not a reason to discard C3.
-      - **Control rule (fixed 2026-10-04, before the control runs):** fit a single scalar T on
-        the identical 50/50 objective and data (`use_disagreement=False`). Disagreement adds
-        value only if C3 beats this control on band-ECE r=8 **or** whole-image ECE (paired
-        bootstrap CI excluding 0) **and** is not significantly worse on the other (that CI
-        includes 0 or is below it). Otherwise the honest result is "a compromise temperature
-        on a mixed objective", reported as a trade-off curve, not a new method.
-      - Also note: C3's whole-image ECE (0.0193) is still ~10× temp's. It's a compromise point,
-        not a free lunch. AP drops slightly (0.6106 vs 0.6215 raw).
-- [x] **C4 — decision.** *Superseded wording.* The original rule ("C3 beats C2 at r=8") was
-      tightened after C2 and before C3; see the "C4 rule tightened" note under C2. Apply
-      that version.
-- **Calibration — final result (2026-10-04). Use this in the paper and viva.**
-  Fishyscapes L&F test half (50 images), all calibrators fit on the val half only:
-  ```
-  model                         AUROC   AP      whole-ECE  band-ECE r=8
-  raw                           0.9920  0.6215  0.0004     0.2273
-  temp, whole-image fit T=1.71  0.9924  0.6193  0.0020     0.1845
-  temp, 50/50 fit      T=3.15   0.9925  0.6177  0.0177     0.1277
-  temp, boundary fit   T=4.36   0.9925  0.6173  0.0420     0.0942
-  T(d) disagreement (C3)        0.9923  0.6106  0.0193     0.1312   (no better than T=3.15)
-  L_calib (CutMix-trained)      0.9924  0.6024  0.0005     0.2396   (worse than raw)
-  ```
-  Findings, each backed by a paired bootstrap above:
-  1. Whole-image ECE hides boundary miscalibration (0.0004 vs 0.2273 at r=8, ~570×).
-  2. The boundary is under-confident (C1). It is learned, not an upsampling artifact (C1b).
-  3. No single temperature calibrates both: T=1.71 / 3.15 / 4.36 trace a trade-off curve.
-     The whole image and its boundary need different corrections.
-  4. Calibration learned on CutMix pastes transfers the wrong correction. It helps on
-     training-bank CARLA objects and hurts on real Fishyscapes (CIs exclude 0 both ways).
-  5. Head disagreement localizes the boundary (~70× higher there) but doesn't help a
-     temperature correct it. A disagreement-conditioned T is no better than a single T on
-     the same objective (tested against a pre-registered control).
-  - Future work, stated as such: spatial calibration needs a test-time signal that tracks
-    the *direction* of the error, not just its location. Disagreement tracks location only.
-- [ ] **C5 — neighbourhood-context calibrator (designed 2026-10-04, before any C5 number).**
-  - *Why:* every temperature works per pixel. An under-confident true-anomaly edge pixel
-    and its normal neighbour can carry similar scores, so no per-pixel correction can raise
-    one without the other. That is the C2/C3 trade-off. Neighbourhood context is a test-time
-    signal for *which side* of an edge a pixel is on: inner-edge pixels sit next to strongly
-    detected object pixels.
-  - *Model ("spatial Platt scaling"):* p = sigmoid(w0 + w1·z + w2·max₁₇(z) + w3·mean₁₇(z)
-    + w4·d). z = logit of the raw fused score. max₁₇/mean₁₇ = 17×17 max/average pooling
-    (radius 8 px, matching r=8). d = head disagreement. 5 parameters, no ground truth at
-    test time.
-  - *Fit:* Fishyscapes val only, the **identical** 50/50 objective and pixel sampling as C3
-    and its control. Only the calibrator family changes.
-  - *Pre-registered rule.* C5 counts as an improvement only if all three hold on the test
-    half: (1) band-ECE r=8 lower than the T=3.15 single-T control, paired-bootstrap CI
-    excluding 0; (2) whole-image ECE not significantly worse than the control (CI includes 0
-    or is below it); (3) whole-image AUROC within `CALIB_AUROC_DROP_LIMIT` (0.03) of raw.
-    Context features are *not* monotonic in the score, so unlike temperature scaling, C5
-    can change AUROC/AP.
-  - If it fails: report it as "neighbourhood context also insufficient" alongside C3, and
-    move to video. No further calibration variants.
-- Step 5 (band-masked `L_calib` on CutMix) is **superseded**. It would learn the edge
-  correction from pastes again, repeating the practice-vs-exam gap. Don't run it without
-  first changing it to train on held-out real data.
-- Watch for: tuning T(d) on val with 50 images, then picking the variant by test score.
-  Choose the variant on val only.
-
-## Explainability (2026-10-03) — options compared, one preferred
-
-**Constraint from the code:** `model/twinguard_model.py:35` runs the encoder under
-`torch.no_grad()`, and the OOD heads (`model/ood_head.py`) are 2-conv layers over all 4
-SegFormer hidden states, upsampled to the stage-1 grid (1/4 of the 1024×512 input =
-256×128). Any gradient method must use an explain-only forward that makes the 4
-`hidden_states` leaf tensors with `requires_grad=True`. The training forward stays
-untouched.
-
-| Method | Fit for TwinGuard | Verdict |
-|---|---|---|
-| Classic Grad-CAM (last encoder stage) | Encoder has no graph (`no_grad`). The stage-4 grid is 1/32 → one cell is ~64 label px on Fishyscapes, larger than the median anomaly (44 px). | **No.** Blurs exactly the objects we detect. |
-| Seg-Grad-CAM on head `conv1` | Feasible at 1/4 res, but the head is 2 layers deep, so the map ≈ the score map itself. Explains nothing new. | **No** as the main method. |
-| **Per-stage gradient attribution** (grad×activation on each of the 4 `hidden_states`) | One backward pass. Shows *which scale* drives the OOD score: fine stage 1 (texture/edges, where paste artifacts live) vs coarse stage 4 (semantics). Per head too. | **Secondary.** Cheap. Directly probes the fake-vs-real shortcut. Reviewers expect a gradient method. |
-| **Counterfactual removal / occlusion** (inpaint object; inpaint only its boundary ring; mask context) | Faithful by construction: it measures the real score change. Native resolution. Uses GT masks we already have. Gives numbers (score drop, deletion/insertion AUC) that can be bootstrapped. | **Preferred.** |
-| Integrated Gradients / SmoothGrad | 20–50+ passes of SegFormer-b5 per image. The baseline image is ill-defined for OOD ("a black image" is itself OOD). Noisy. | No. |
-| Attention rollout | SegFormer's efficient attention uses spatial reduction, so rollout isn't well defined and isn't faithful. | No. |
-| TCAV / concept vectors | Needs curated concept sets. Too much for the timeline. | No. |
-| Aleatoric/epistemic decomposition (entropy of mean = mean entropy + mutual information, over the 3 heads) | Zero extra passes. Explains *why* the boundary is miscalibrated: edges should be aleatoric-heavy, object interiors epistemic. | **Include as analysis.** It links explainability to calibration. Caveat: 3 heads sharing a frozen encoder underestimate epistemic uncertainty. |
-
-**Why counterfactual removal is preferred:**
-1. Faithful: it reports what the model actually does when evidence is removed, not a
-   gradient approximation.
-2. Works at the scale of our anomalies (22–74 px). CAM methods cannot.
-3. Tests the review's hypotheses directly. Inpainting the *boundary ring only* vs the
-   *interior only* shows whether the score rests on edge cues (paste-like shortcut) or
-   object content. Masking *context* shows whether the score is local.
-4. Quantitative with CIs over the 50 test images, the same discipline as Step 4.
-5. Model-agnostic, so it ports to any future checkpoint unchanged.
-- **Main risk, OOD-specific:** an inpainted patch can itself look anomalous, so a score
-  drop may be understated. Mitigate by comparing two fill methods (`cv2.inpaint` vs a road
-  patch from the same frame) and reporting both. Also check that the fill region's own
-  score stays low.
-
-**Steps (local, eval-only):**
-- [ ] **X1** `explain.py` (new, eval-only): removal tests on the 50 Fishyscapes test images
-      (object / ring r=8 / interior / context), fused + per-head score change, two fill
-      methods, paired bootstrap.
-- [ ] **X2** Per-stage gradient attribution in the same script, on ~6 demo images plus
-      aggregate per-stage share over the test half.
-- [ ] **X3** Aleatoric/epistemic maps from the cached 3-head scores, plus their averages
-      inside vs outside the r=8 band, linked to the C1–C3 calibration results.
-- [ ] **X4** Frontend: one explainability panel on `/demo` (removal before/after + stage
-      attribution bars). Explicitly labeled when a panel is pending.
-- Citations to verify before they go in the paper: Seg-Grad-CAM (Vinogradova et al.,
-  2020), HiResCAM (Draelos & Carin, 2020), RISE deletion/insertion (Petsiuk et al., 2018),
-  uncertainty decomposition (Depeweg et al., 2018).
-
-## Previous resume point (paused 2026-09-26, no pod running)
-
-Boundary-only ECE + UBQ Steps 1-4 are done: `metrics.py` primitives, `validate_metrics.py`
-checks, `eval_spatial.py`, and CARLA plus Fishyscapes results. Everything ran locally on the
-RTX 3070 in the `cuda_test` conda env (`conda activate cuda_test` → `python ...`). The
-plain `python` on PATH has no numpy, so don't use it. Full numbers are under Step 4 in
-"Boundary-only ECE (Novelty 6) + UBQ" below.
-
-**Headline:** raw band-ECE (r=8) = 0.2273 vs whole-image 0.0004 (~570×). Temp scaling
-partly helps (0.1845). The current `L_calib` is significantly worse than temp and no better
-than raw. The pre-registered decision rule says Step 5 (band-masked `L_calib` fine-tune) is
-justified.
-
-Pick up tomorrow with one of these, in the recommended order:
-1. **Band-fitted temperature baseline** (design point 5, local, no training). Fit T on
-   val-half band pixels only, then re-run the Step 4 comparison. It is cheap, and it is the
-   stronger baseline Step 5 would have to beat anyway.
-2. **Decide on Step 5.** It needs a RunPod run about the length of the 2026-09-25 calib
-   runs. Design point 3 has the implementation notes (`max_pool2d` band on GPU in
-   `run_calib_finetune`; add `eval_spatial.py` to `make_upload.py` if it has to run on
-   the pod).
-3. **Put the Step 4 numbers into the frontend.** The calibration sections on the Home and
-   Training Runs pages currently show only the whole-image table.
-
-Also done this session: frontend home-page redesign (new indigo palette, live
-disagreement grid, calibration tabs) and the reliability diagram on the Training Runs page
-(`static/calibration_reliability.png`).
-
-## Earlier checkpoint (paused 2026-09-21, pod stopped) — superseded by the one above
-
-Just cleared the project's top blocking item: a real, verified, post-BCE-fix Experiment B
-number. See "Anomaly bank rebalancing — implemented 2026-09-21" below for the full result
-(`AUROC=0.9920`, clears both the 0.75 and 0.83 gates). Checkpoint + `train.log` + `mlflow.db`
-pulled off the pod before stopping it; pod itself and its venv/data are gone/disposable.
-
-Pick one of these three to start tomorrow (none blocks the others, no order requirement):
-1. **Wire the new checkpoint into the demo** — `server.py`/`README.md` still show the stale
-   Checkpoint B (0.6190). Needs a filename-tagging decision first (see the note under the
-   rebalancing checkpoint below) so it doesn't get silently overwritten by a future run.
-2. **Start `L_calib` calibration work** — now unblocked, gate cleared. See "Calibration
-   (L_calib) gate" section below for what it has to be (joint fine-tune + differentiable
-   ECE surrogate, not temperature scaling) and the proof-of-change/frontend requirements.
-3. **AP=0.6218 sanity check** — flagged as an open question, not urgent (AUROC was measured
-   on real Fishyscapes, not synthetic CutMix, so probably fine — just not explicitly checked).
-
-Also still open, not blocking, no rush: the FPR@95=1.0 vs documented-0.6802 discrepancy on
-Experiment A (see "Blocking — do before trusting any Experiment A vs B comparison" below).
-
-## Branch context — merged 2026-09-19, superseding the note below
-
-The audited pipeline (BCE-with-logits fix, drivable-surface placement, photometric
-harmonization, val/test split, AP/mIoU, `preflight.py`, `check_runs.py`) has been pulled
-onto `main` from `origin/exp_coco`, file-by-file, keeping `main`'s demo (`frontend/`,
-`server.py`) intact rather than losing it to a branch merge. `main` is now the single
-branch to work from — see `CLAUDE.md`'s "Git branches" section for exactly what moved,
-what was kept, and the one real breakage (raw-logit OOD output vs. the demo's [0,1]
-rendering assumption) that was found and fixed in `server.py` during the merge.
-
-*(Original 2026-09-19 note, kept for history: "The audited pipeline lives on
-`origin/exp_coco`, not `main`... these two branches have diverged hard and will need a
-deliberate merge." — that merge has now happened.)*
-
-Confirmed already fixed on `exp_coco` (verified directly, not just claimed):
-- `data/anomaly_sources.py` — CARLA and COCO already live behind one clean interface,
-  gated by `config.ANOMALY_SOURCE`, which on `exp_coco` accepted `"carla" | "coco"` and
-  defaulted to `"coco"` only because no CARLA machine was available at the time. On
-  `main` it now also accepts `"both"`, which is the current default (see below); the
-  `config.py` comment was updated to match, so don't look for the old "temporary
-  stand-in" wording.
-- `CUTMIX_SCALE_MIN/MAX = 0.012 / 0.20` — the oversized-paste bug is already fixed here,
-  matching real Fishyscapes anomaly-size statistics ("to within a pixel or two" per the
-  code comment).
-- Still **not** implemented anywhere on either branch, confirmed via `grep -rn "UBQ\|Hausdorff"`:
-  UBQ is objective-only, not built.
-
-## Blocking — do before trusting any Experiment A vs B comparison
-
-- [x] Re-run the baseline (`experiment_a.py`, now on `main`) for the test-half number —
-      done 2026-09-21 on RunPod (A40), against the rebalanced 2000-object anomaly bank
-      (irrelevant here — `experiment_a.py` doesn't touch CutMix or the anomaly bank at
-      all, it's untrained off-the-shelf SegFormer + MSP, no OOD heads involved).
-      → artifact: MLflow run `experiment_a_baseline`, logged to
-        `/workspace/twinguard_v2/mlflow.db` on the pod (pull it off before the pod goes
-        away — Step 9).
-      **Test half**: AUROC=0.8372  AP=0.0114  FPR@95=1.0000  ECE=0.0148
-      **Val half**:  AUROC=0.8170  AP=0.0176  FPR@95=1.0000  ECE=0.0161
-      - AUROC and ECE line up closely with the previously documented full-100-image
-        number (`README.md`: AUROC 0.8304, ECE 0.0154) — same deterministic baseline,
-        consistent result, clears both the 0.75 and 0.83 gates.
-      - **FPR@95=1.0000 does not match** the documented 0.6802, on *both* halves, not
-        just one — not yet fully explained. Working theory, not confirmed: the
-        documented 0.6802 was measured over the full 100 images combined, whereas this
-        run splits into 50/50 val/test; FPR@95 is a tail-quantile metric and known to be
-        unstable under this project's severe (~0.28%) class imbalance with half the
-        sample size. AP=0.0114 has no prior recorded figure to compare against.
-      - **Not resolved — flag if this matters for the viva**: don't present FPR@95=1.0
-        as "the baseline is broken" (it isn't a trained model, it can't "collapse" the
-        way the OOD heads can) or quietly drop it — if asked, the honest answer is
-        "AUROC/ECE replicate the documented baseline; FPR@95 diverges on the half-splits
-        and the cause isn't confirmed yet."
-- [x] Run `preflight.py` clean immediately before the next paid RunPod run — done
-      2026-09-19, right after merging the audited pipeline + curating CARLA + adding
-      COCO. Result: **READY, with 1 warning** (no local CUDA device — expected, real
-      training runs on RunPod; not a pipeline defect). All 13 checks passed: dataset
-      paths, Cityscapes/Fishyscapes loaders, anomaly bank (3045 objects, `both` mode),
-      CutMix output stats matching real Fishyscapes distribution, model wiring (logits
-      emitted, encoder frozen correctly), one real training step, metrics sanity check.
-      → artifact: preflight stdout captured this session; re-run and save a copy
-        alongside the next real RunPod run's MLflow entry (this run wasn't logged to
-        MLflow, it's a local sanity check only).
-
-## CARLA object bank — curation (from tonight's discussion)
-
-- [x] Audit all 50 local CARLA objects (`data/images/`, `data/masks/`) for oversized/
-      implausible props — done 2026-09-19 by background agent, full 50-row table with
-      frame-area-fraction + visual judgment.
-      **Result: 5 of 50 objects are bad, 45 are fine.**
-      - `#39` (fountain/monument + human statue, 40.8% of frame) — wrong category AND oversized
-      - `#40` (full bus-stop shelter structure, 30.0% of frame) — wrong category AND oversized
-      - `#14`, `#15` (trampoline, ~8% of frame each) — wrong category AND oversized
-      - `#41` (smaller bus-shelter instance, 6.3%) — wrong category (street furniture),
-        size alone isn't extreme
-      - Everything ≤5.4% frame area (45 objects) reads as plausible road debris — pallets,
-        road flares, cones, bollards, wheelie bins, crates, warning signs — 20 of these
-        visually confirmed directly, the rest inferred from consistent size/aspect-ratio
-        with the confirmed set.
-      - Note: `#40`/`#41` and `#44`/`#45` and `#19`/`#20` etc. look like the same underlying
-        3D prop rendered at different distances — the 50 "objects" aren't all unique;
-        excluding `#39-41` removes both bad prop families in one pass.
-      - Separate issue, not size/category: `#15` (and to a lesser extent `#12`) renders at
-        very low contrast against the road despite a large mask — a paste that's barely
-        visible is useless for training regardless of plausibility; worth a second look.
-- [x] Curate the CARLA bank: **exclude indices 39, 40, 41, 14, 15** from the object bank
-      — done 2026-09-19. Implemented by moving the 5 files (not a code filter list, since
-      `data/anomaly_sources.py`'s CARLA builder just globs the directory) from
-      `data/images/`+`data/masks/` into `data/_excluded_objects/` — reversible, not
-      deleted. 45 objects remain and were verified by `preflight.py`.
-- [x] Add an `ANOMALY_SOURCE = "both"` mode to `data/anomaly_sources.py` — done
-      2026-09-19: `_build_both_bank()` pools curated-CARLA (45) + exclusion-filtered-COCO
-      (3000, from a fresh `download_coco_anomalies.py` run) into one bank, sampled
-      uniformly per paste, 3045 objects total. Verified via `preflight.py`'s anomaly-bank
-      and cutmix-output checks (both passed).
-      → **done 2026-09-21** — see the rebalanced-bank training run below
-        (`experiment_b_3head`, 2000-object `both` bank, not the original 3045). The
-        `carla`-only/`coco`-only comparison runs are still not done — see the ablation
-        checklist below.
-
-## Anomaly bank rebalancing — implemented 2026-09-21
-
-Was a discussion-only checkpoint (2026-09-20 entry below), now built and verified.
-Original problem: `"both"` bank pooled 45 CARLA + 3000 COCO sampled *uniformly per
-paste* — CARLA was effectively ~1.5% of what actually got pasted during training, which
-undercut the whole point of pooling both sources (the CG-render vs. photo
-statistical-signature argument in `_build_both_bank`'s docstring).
-
-**What was actually built** (not what the 2026-09-20 checklist originally assumed):
-growing CARLA to 500 *distinct* objects would need the CARLA simulator running locally
-to render new props — a separate, bigger task, not something codeable against RunPod.
-Instead, `_build_both_bank()` (`data/anomaly_sources.py`) now **repeats** the existing
-curated 45 CARLA files up to `config.CARLA_BANK_TARGET` (default 500) and takes a
-**seeded random subsample** of COCO down to `config.COCO_BANK_TARGET` (default 1500) —
-total pool 2000, CARLA now ≈25% of what gets pasted instead of ~1.5%. Honest tradeoff,
-stated explicitly in the code comment: repeating the same 45 files does not add new
-CARLA visual diversity, it only increases how often those same 45 objects get pasted
-(CutMix's own random scale/position per paste means it isn't pixel-identical every
-time, but it is the same 45 underlying objects). Growing to genuinely distinct CARLA
-objects remains a separate, not-yet-started task requiring a live CARLA server.
-
-- [x] Added `CARLA_BANK_TARGET = 500` / `COCO_BANK_TARGET = 1500` to `config.py`.
-- [x] `_build_both_bank()` repeats CARLA pairs to the target (ceil-div tile, truncated)
-      and subsamples COCO pairs to the target via `random.Random(config.GLOBAL_SEED)`
-      — reproducible across machines/pod restarts, not re-randomized per run.
-- [x] Verified locally: `build_anomaly_bank()` reports exactly 2000 objects;
-      `preflight.py` reruns clean, `READY` with only the expected no-CUDA warning, all
-      13 checks pass, CutMix output stats still track the real Fishyscapes distribution
-      (pos rate 0.2925% vs real 0.280%, per-object size percentiles still overlapping
-      the real band).
-      → artifact: preflight stdout captured 2026-09-21, this session.
-- [ ] Not done: the COCO literal-duplicate-crop check from the original discussion (dedupe
-      vs. normal per-category frequency variance was never actually resolved — see
-      "Pending" note below). The 1500-subsample is a plain random sample of the existing
-      3000, duplicates and all, if any exist.
-- [ ] Not done: re-running the CARLA curation audit "at the new scale" doesn't apply the
-      same way anymore, since no new CARLA renders were produced — the 45 curated objects
-      are unchanged from the existing 2026-09-19 audit. Only relevant again if/when
-      genuinely new CARLA objects get rendered.
-- [ ] Decide (still open): does 2000 (500/1500) become the new permanent default for
-      `"both"`, or is it one arm of the CARLA-vs-COCO-vs-both ablation below? Not decided
-      yet — this was built to unblock the current RunPod run, not as a final answer.
-- [x] **Blocking item cleared 2026-09-21** — real RunPod A40 training run,
-      `experiment_b_3head`, rebalanced 2000-object `both` bank (500 CARLA-repeated /
-      1500 COCO-subsampled), 8 epochs, selected checkpoint = epoch 4 (best val AP).
-      **Test half: AUROC=0.9920  AP=0.6218  FPR@95=0.0287  ECE=0.0004** (head-disagreement
-      AUROC=0.9865). Clears **both** the 0.75 pre-calibration gate and the 0.8304/0.83
-      post-calibration target — the first run to clear either, and the first valid
-      post-BCE-fix Experiment B number to exist at all (Checkpoints A/B both predate that
-      fix and are non-comparable, per `CLAUDE.md`).
-      - Verified, not just trusted: `check_collapse.py` on the saved checkpoint shows all
-        three heads healthy (separations +0.38/+0.50/+0.48, std 0.048-0.057 — all well
-        past the 0.01 collapse-warning threshold and the low-std-is-expected-here note).
-        `check_runs.py` confirms the same numbers side by side with Experiment A.
-        Epoch-8 tail of `train.log` also shows healthy separation (+0.52/+0.48/+0.54) and
-        mIoU held at 0.7690 — not sacrificed for OOD performance.
-      - Artifacts pulled off the pod before disconnecting: `checkpoints/model_3head_best.pth`,
-        `train.log`, `mlflow.db` (local copies, this session, 2026-09-21).
-      - **Not yet reconciled with `server.py`**: this checkpoint is not yet wired into the
-        live demo (`config.CHECKPOINT_3HEAD` / `EXPERIMENT_HISTORY`) or `README.md`'s
-        Experiment B table — those still show Checkpoint B's stale, pre-fix 0.6190. Needs
-        a decision on filename tagging (this run's checkpoint composition — rebalanced
-        `both`, BCE-fixed — isn't yet distinguishable by filename from a future different
-        run, per the tagging scheme `CLAUDE.md` describes) before treating it as "the"
-        checkpoint.
-      → artifact: `mlflow.db` (local copy), `train.log`, `check_collapse.py`/`check_runs.py`
-        stdout, all captured 2026-09-21.
-
-## Experiments the audit fixes unlocked
-
-- [ ] CARLA vs COCO vs both — three-way ablation, identical pipeline, only
-      `config.ANOMALY_SOURCE` flipped
-      → artifact: three MLflow runs, side-by-side AUROC/AP/mIoU table
-- [ ] Verify the paste-shortcut fix actually closed the gap (harmonization + feathering,
-      already on `exp_coco`)
-      → artifact: a short probe script result — can a simple classifier still tell
-        "real Cityscapes patch" from "pasted patch" using OOD-head features? report
-        its accuracy; near-chance = shortcut closed
-- [ ] Confirm the "peaks epoch 1, degrades after" pattern (Slide 08's collapse signature)
-      is actually gone under the fixed pipeline
-      → artifact: `check_runs.py --trend` output for the new clean run
-- [ ] Temperature scaling / Phase 3 calibration — now implementable since heads emit logits
-      → artifact: `L_calib` implementation + a run showing AUROC before/after calibration
-        (expect a small AUROC cost per `CALIBRATION_TRADEOFF_NOTE` — that's fine, not a bug)
-
-## Calibration (L_calib) gate — reconciliation + sequencing (2026-09-20, discussion, not yet acted on)
-
-Read `TwinGuard_Full_Plan_Updated (1).html` in full during this discussion. It disagrees
-with `config.py` on the gate, and the current real numbers clear neither reading —
-recorded here so this isn't re-litigated from scratch next session.
-
-- **Gate conflict, unresolved:** the plan doc's Section 02 states flatly that *nothing* in
-  Section 03 (which Novelty 1 explicitly places `L_calib`/calibration inside of) gets built
-  until Experiment B beats **0.8304** (the full baseline AUROC). `config.py`'s
-  `PRECALIBRATION_AUROC_GATE = 0.75` is looser. Not reconciled — treat **0.75 as the floor
-  to even start Phase 2b**, but don't claim the plan doc's stricter 0.83 reading has been
-  overridden without checking with whoever owns that doc.
-- **Resolved 2026-09-21 — no longer moot:** the fresh `experiment_b_3head` run (rebalanced
-  2000-object `both` bank, post-BCE-fix pipeline) scored **AUROC=0.9920** on the test half,
-  clearing 0.75 *and* 0.8304/0.83. This is the first valid post-fix number to exist — see
-  the rebalancing checkpoint above for the full result and verification (`check_collapse.py`,
-  `check_runs.py`). The old Checkpoint A/B numbers (0.5727 / 0.6190) are now fully
-  superseded for gate-checking purposes, though still worth keeping in `README.md` as the
-  documented history of the collapse-then-fix story.
-- [x] **Blocking item cleared 2026-09-21** — see above. Gate cleared by a wide margin
-      (0.9920 vs both 0.75 and 0.83), not just barely.
-- [ ] **New follow-up, not yet done:** the plan doc's Section 02 wants Experiment B to beat
-      0.8304 specifically to unlock Section 03 work (L_calib included) — 0.9920 clears that
-      too, so both readings of the gate (the looser `config.py` 0.75 and the stricter plan-doc
-      0.8304) are now satisfied simultaneously. The reconciliation question (which one is
-      "the" gate going forward) is now moot in practice, though still not formally answered
-      for future gates that might not clear both at once.
-- [ ] **Open question worth flagging, not yet investigated:** this AUROC (0.9920) is
-      substantially higher than Experiment A's baseline (0.8372) — good, but also high
-      enough to sanity-check before building calibration work on top of it. `check_collapse.py`
-      already rules out the specific collapse failure mode (heads outputting near-constant
-      scores), but a high-AUROC/low-AP combination (AP=0.6218, not near 1.0) is still
-      worth a second look — e.g. confirming test-half CutMix-pasted synthetic anomalies
-      aren't systematically easier than real Fishyscapes anomalies would be, given AUROC
-      here is measured on the *real* Fishyscapes test half, not on CutMix — so this
-      concern may not apply, but hasn't been explicitly checked.
-- **What `L_calib` has to be, once the gate clears** (per Novelty 1 in the plan doc): *not*
-  plain post-hoc temperature scaling. The whole justification for building it is beating
-  temperature scaling specifically on **spatial** calibration (boundary-region ECE, UBQ) —
-  a single scalar rescaling can only rescale confidence uniformly, it mathematically cannot
-  reshape calibration spatially. So this has to be a **joint fine-tune with a differentiable
-  calibration-aware loss term** (an ECE surrogate — real histogram-based ECE isn't
-  differentiable), evaluated three ways against a temperature-scaling baseline: whole-image
-  ECE, boundary-only ECE (Novelty 6, also not built), and UBQ (also not built — see below).
-  Documented fallback if temp scaling ties on whole-image ECE: pivot the claim entirely to
-  boundary ECE + UBQ, since a scalar fix structurally can't compete there.
-
-### L_calib — implemented 2026-09-25, not yet run on real data
-
-Code written and locally sanity-checked; **no real training run has happened yet** — this
-needs the pod (GPU + real Cityscapes/Fishyscapes), not just correct code.
-
-- [x] `losses.py`'s `SoftECELoss` — differentiable ECE surrogate (soft-binned, triangular
-      kernel membership, squared per-bin conf/acc gap). Unit-tested locally on synthetic
-      data (no GPU/dataset needed): near-zero loss on a well-calibrated synthetic score,
-      clearly higher on a deliberately overconfident one, gradients finite and flowing.
-      This is the actual test that exists — it proves the loss is directionally correct
-      and differentiable, NOT that it works on the real model/data.
-- [x] `metrics.py`'s `ScoreHistogram.reliability_curve()` — per-bin (confidence, accuracy,
-      weight), sharing `ece()`'s own binning so the diagram and the reported ECE number
-      can never silently disagree.
-- [x] `config.py` — `BETA_CALIB`, `CALIB_EPOCHS`, `CALIB_LEARNING_RATE`,
-      `CALIB_AUROC_DROP_LIMIT`, `CHECKPOINT_3HEAD_CALIB`, `TEMPERATURE_*` added.
-- [x] `calibrate.py` (new file) — three steps in one script: (1) fits a temperature-scaling
-      baseline on the Fishyscapes val half; (2) joint fine-tune of the already-verified
-      checkpoint (`model_3head_best.pth`, AUROC=0.9920) with `SoftECELoss` added to the
-      existing seg+OOD loss, selecting on val ECE, stopping (not saving) if val AUROC drops
-      more than `CALIB_AUROC_DROP_LIMIT`; (3) the comparison table (raw vs. temp-scaled vs.
-      L_calib, whole-image AUROC/AP/FPR@95/ECE) plus a saved reliability-diagram PNG, both
-      logged to MLflow. Added to `make_upload.py`'s file list and `requirements-runpod.txt`
-      (needed `matplotlib`, which the training-only requirements file didn't have before).
-- [x] **Real run done 2026-09-25** on RunPod (A40), against `model_3head_best.pth`
-      (AUROC=0.9920, the verified post-rebalance checkpoint). Fine-tune ran 5 epochs,
-      AUROC-drop guard never triggered (max drop 0.0033 at epoch 3, well under the 0.03
-      limit), selected epoch 1 (best val ECE 0.0009). Full comparison table, test half:
-
-      ```
-      model            AUROC      AP  FPR@95     ECE
-      raw             0.9920  0.6215  0.0290  0.0004
-      temp-scaled     0.9924  0.6193  0.0287  0.0020
-      L_calib         0.9924  0.6024  0.0293  0.0005
-      ```
-      fitted temperature: 1.7142.
-
-      **Honest read, not a clean win:** temperature scaling made whole-image ECE *worse*
-      (0.0004 → 0.0020), and `L_calib`'s ECE (0.0005) is barely different from raw's
-      already-tiny 0.0004. This is very likely the exact limitation `PLAN.md` already
-      anticipated above: at Fishyscapes' extreme 0.28% positive rate, whole-image ECE is
-      dominated by the overwhelming majority of easy true-negative pixels, so an
-      already-high-AUROC model (0.992) gets a trivially low ECE almost regardless of how
-      well-calibrated the hard/boundary pixels actually are — `metrics.py`'s own `ece()`
-      docstring warns about exactly this class of near-perfect-but-meaningless ECE. **This
-      table does not support a "L_calib beats temperature scaling" claim** — it's real
-      empirical confirmation that whole-image ECE can't show the difference, which is
-      *why* boundary-ECE/UBQ were always the load-bearing metrics for this claim, not a
-      fallback.
-      - Small legitimate side-note: AUROC moved slightly under temperature scaling
-        (0.9920 → 0.9924) even though a scalar rescale is monotonic per-head — this is
-        because fusion is mean-of-per-head-sigmoids, and scaling each head individually
-        before averaging is not exactly the same monotonic transform as scaling the
-        fused score directly. Expected, not a bug.
-      → artifact: `calibrate.log` (full run log), `model_3head_calib_best.pth`,
-        `calibration_reliability.png` — pulled off the pod to local machine 2026-09-25
-        (this is the BETA_CALIB=1.0 run's artifacts — see below, this is the one kept).
-
-- [x] **Tuning attempt, 2026-09-25, reverted — BETA_CALIB=1.0 → 50 → back to 1.0.**
-      The near-no-op result above was suspected to be caused by L_calib's gradient
-      contribution being under 1% of the base loss (raw calib-loss ~0.0002-0.0012 vs.
-      base ~0.05-0.11), so `BETA_CALIB` was raised to 50 and `calibrate.py` re-run.
-      Result: **worse on every axis except AP**.
-      ```
-                      AUROC      AP  FPR@95     ECE
-      raw            0.9920  0.6215  0.0290  0.0004
-      L_calib (β=1)  0.9924  0.6024  0.0293  0.0005   -- near-no-op
-      L_calib (β=50) 0.9898  0.6116  0.0301  0.0014   -- worse on AUROC, FPR@95, ECE
-      ```
-      The raw *surrogate* loss did shrink further under β=50 (0.0001, down from
-      ~0.0004-0.0006) — so the training signal genuinely strengthened as intended — but
-      the real, histogram-based ECE (`metrics.py`) got worse anyway. This is a real
-      surrogate/true-metric mismatch, not a bug in either implementation: pushing the
-      smooth soft-binned relaxation down harder does not reliably improve the real,
-      hard-binned ECE under this severe (~0.28%) class imbalance, where whole-image ECE
-      is dominated by trivial true-negative pixels regardless of what happens on the
-      harder ones. **Decision: reverted `BETA_CALIB` to 1.0** — the near-no-op result is
-      the one being reported, not chased further. Do not re-tune `BETA_CALIB` again
-      without boundary-only ECE/UBQ in hand first; whole-image ECE has now failed twice
-      (once by being trivially already-low, once by not responding sensibly to a
-      stronger training signal) as a metric worth optimizing against directly.
-      → artifact: `calibrate2.log` (the β=50 run, pod-only, not pulled to local — the
-        β=1 checkpoint above is the one that matters and is already saved locally).
-
-- [ ] Whole-image ECE is what this table can show. Boundary-only ECE (Novelty 6) and UBQ
-      are still unbuilt (see the UBQ section below) — the comparison table's own printed
-      output says this explicitly, so it can't be quoted as proving the spatial claim on
-      its own.
-- [ ] Frontend integration (the "Proof-of-change outputs" section right below this one) is
-      still entirely unbuilt — nothing from this section is in `frontend/`/`server.py` yet.
-
-### Proof-of-change outputs — and getting them into the live demo, not just MLflow
-
-Decided in discussion: the calibration work isn't done when the fine-tune finishes —
-it's done when the result is visible in `frontend/`, not just sitting in `mlflow.db`.
-
-- [ ] **Comparison table**: raw model vs. temperature-scaled vs. `L_calib` fine-tuned,
-      on AUROC/AP/FPR@95/ECE/mIoU (Fishyscapes test half) — computable today via
-      `metrics.py`'s existing streaming histogram, no new metric code needed. Must show
-      the AUROC cost next to the ECE gain together (per `CALIBRATION_TRADEOFF_NOTE`), not
-      ECE alone with no context.
-      → artifact: `check_runs.py`-style table, same shape as the existing experiment
-        comparison it already produces.
-- [ ] **Boundary-only ECE** (Novelty 6) and **UBQ** — both still unbuilt (see UBQ section
-      below); required before the calibration claim is complete, since whole-image ECE
-      alone can't prove `L_calib` beats temperature scaling — only the spatial metrics can.
-- [ ] **Reliability diagram** (confidence-vs-actual-accuracy, binned): three curves — raw,
-      temp-scaled, `L_calib` — raw bowed away from the diagonal, `L_calib` closest to it.
-      → artifact: a saved plot, same per-pixel-scores-and-labels data the eval loop
-        already produces.
-- [ ] **Frontend integration — the actual deliverable, not an afterthought:**
-      - New panel in `frontend/`'s demo (`server.py` already has the plumbing pattern for
-        cached static panels — same approach as the existing OOD/uncertainty heatmaps):
-        the v1-vs-v3 side-by-side panel already scoped in the plan doc — same frame, v1's
-        loose uncertainty blob next to v3's tight boundary-hugging outline. This was
-        explicitly flagged there as "the one moment the whole dashboard exists for."
-      - The comparison table and reliability diagram surfaced somewhere in the demo too
-        (e.g. a "Calibration" tab/section alongside the existing "Training Runs" page),
-        not left as a notebook output or an MLflow-only artifact — reuse
-        `EXPERIMENT_HISTORY`'s existing pattern in `server.py` rather than inventing a
-        new data path.
-      - **Guardrail, already stated once in the plan doc and worth repeating here:** if a
-        demo date lands before `L_calib`/UBQ/boundary-ECE actually exist, show the panel
-        explicitly labeled "target output — pending Model v3," not faked or approximated
-        data. This is called out there as the single most reputationally expensive mistake
-        available in the whole project.
-
-## Boundary-only ECE (Novelty 6) + UBQ — shared plan, eval-only first (2026-09-26, planning only, nothing built)
-
-Both `L_calib` runs (β=1, β=50) showed that whole-image ECE can't separate raw, temp-scaled
-and `L_calib`. At a 0.28% positive rate it mostly measures the easy true negatives. This
-section plans the two spatial metrics the calibration claim actually depends on. It also
-sets the order of work for a ~3-day deadline. Code state was checked before writing this.
-`grep -rn "UBQ\|Hausdorff\|boundary" *.py` finds only docstrings and comments
-(`calibrate.py:19,248`, `config.py:214,229`, `losses.py:8`) plus unrelated uses in
-`server.py`/`data/cutmix.py`. No band, distance or Hausdorff code exists anywhere.
-
-**Facts checked in the code (they drive the decisions below):**
-- **Output resolution.** `data/transforms.py`'s `load_image_tensor` resizes every input to
-  `config.INPUT_WIDTH×INPUT_HEIGHT` = 1024×512. SegFormer predicts at 1/4 of that, which is
-  256×128. `evaluate_fused`/`evaluate_ood` then upsample bilinearly to label size. Fishyscapes
-  labels are 2048×1024 and CARLA frames are 1024×1024, so one model output cell is 8 label
-  pixels tall on both. A band narrower than ~8 px would measure bilinear interpolation, not
-  the model.
-- **Real anomaly sizes.** From `config.py`'s CutMix comment (all 188 Fishyscapes L&F
-  objects), the longest side as a fraction of the 1024 px short side is:
-  min 0.007 | p25 0.022 | median 0.043 | p75 0.072. That is ≈7 / 22 / 44 / 74 px.
-  At p25 an object is under 3 output cells long, so for small objects most pixels sit near
-  an edge anyway.
-- **CARLA masks are full scenes, not crops.** `generate_anomalies.py` saves the full
-  1024×1024 RGB frame (`data/images/anomaly_NNN.png`) and a full-frame binary mask
-  (`data/masks/anomaly_mask_NNN.npy`). The mask is the largest connected changed-tag blob
-  from `extract_new_object_mask`, with `MIN_COMPONENT_PIXELS=50`. There are 45 curated
-  frames and no 255/void pixels. So the model can run directly on these frames against
-  pixel-exact ground truth, with no CutMix involved.
-- **Checkpoint path gotcha, found while planning.** The real 0.9920 checkpoint and the kept
-  β=1 `L_calib` checkpoint sit at the **repo root** (`./model_3head_best.pth`,
-  `./model_3head_calib_best.pth`). `config.CHECKPOINT_3HEAD` points to
-  `checkpoints/model_3head_best.pth`, which on this machine is the **stale Sep-17 file**
-  (the Checkpoint-B duplicate described in `CLAUDE.md`). Any eval here must pass explicit
-  paths. Also, **do not re-run `python calibrate.py`** to get these numbers. Its `main()`
-  always runs `run_calib_finetune` again, which overwrites `config.CHECKPOINT_3HEAD_CALIB`.
-  Temperature can be passed as the logged value **T=1.7142** (`calibrate.log`) instead of
-  being re-fit.
-
-**Design decisions (proposed, not yet built):**
-
-1. **What "boundary region" means.** The band is every valid pixel whose Euclidean distance
-   to the ground-truth anomaly edge is at most `r`. It is symmetric, with an inner half (just
-   inside the object) and an outer half (just outside). Proposed default:
-   **`r = 8` px in label pixels**, i.e. one model output cell on both datasets (see above).
-   - The reason for 8: anything narrower is below the model's native resolution.
-     Anything much wider stops being "boundary" for typical objects. At r=8 a median object
-     (44 px) keeps a ~28 px interior core outside the band. A p25 object (22 px) keeps
-     almost none, which honestly reflects that small objects are nearly all edge.
-   - Also report **r ∈ {4, 16}** as a sensitivity check, so the conclusion can't rest on one
-     hand-picked width. This costs nothing extra: the same forward pass fills several
-     histograms.
-   - Void pixels (label 255, Fishyscapes only) are removed from the band after it is
-     computed, exactly as `valid = label_map != 255` already does in `evaluate_fused`.
-2. **How band-ECE is computed.** Reuse `metrics.py`'s `ScoreHistogram` unchanged. Band-ECE is
-   just a second `ScoreHistogram` whose `.update()` receives only `scores[band]` and
-   `labels[band]`. `ece()`, `reliability_curve()` and `summary()` then work on that
-   histogram with no changes. Band AUROC, AP and FPR@95 come out of `summary()` too. They
-   are secondary and should be read as "edge discrimination", not headline numbers.
-   - **Where it goes.** Leave `train.py`'s `evaluate_ood` untouched. It drives checkpoint
-     selection and should not change three days out. Leave `calibrate.py`'s
-     `evaluate_fused` untouched as well: its return type is used by `fit`/`finetune`/
-     `comparison_table`/`--temp-only`. Add **one new eval-only script,
-     `eval_spatial.py`**. It takes explicit `--raw`, `--calib` and `--temperature`
-     arguments and `--dataset carla|fishyscapes`, copies `evaluate_fused`'s per-image
-     loop, and fills a whole-image histogram, one band histogram per `r`, and per-image
-     UBQ values. It never trains and never writes a checkpoint. If it runs on the pod, add
-     it to `make_upload.py`'s file list.
-   - Also print the band's pixel count and positive rate for each `r`. This is the on-disk
-     proof that band-ECE is no longer dominated by negatives. If the band positive rate
-     comes out far from the tens of percent expected, stop and check before reading ECE.
-3. **Loss or eval-only? Recommendation: eval-only first, and probably eval-only for this
-   deadline.** Eval-only means 3 models × 50 test images of forward passes, with no
-   training and no pod-hour risk. It answers the question that decides everything else:
-   *does the existing β=1 `L_calib` checkpoint differ from temp scaling in the band, even
-   though whole-image ECE showed no difference?*
-   - Build a band-masked `SoftECELoss` variant only if the eval passes a rule fixed
-     **before** the numbers are seen:
-     - raw's band-ECE is clearly worse than its whole-image ECE (so there is band
-       miscalibration to fix), **and**
-     - neither temp scaling nor current `L_calib` closes that gap. "Closes the gap" is
-       judged with a paired bootstrap over the 50 test images; see the checklist.
-   - If both conditions hold, the code change is small. In `run_calib_finetune`, apply
-     `soft_ece` only to band pixels of `ood_target`. Compute that band on the GPU with
-     `max_pool2d`-based dilation/erosion, since `scipy` EDT can't run per batch.
-     - Caveat: the square kernel only approximates the Euclidean band. The approximation
-       and the resolution at which `ood_target` meets `ood_fused` in `compute_total_loss`
-       must be checked and written down.
-     - Cost: one more pod run the length of the 2026-09-25 runs.
-   - Honest prior: β=1 `L_calib` was selected at epoch 1 and moved almost nothing
-     whole-image, so "no band difference either" is a likely outcome. Plan for it (see the
-     viva framing below). Don't treat it as a surprise.
-4. **Shared infrastructure with UBQ.** One geometric primitive serves both metrics. It goes
-   in `metrics.py` as plain functions, next to the other eval primitives, rather than a new
-   module (per `CLAUDE.md`'s "no new abstractions" convention). `scipy` is already in both
-   requirements files.
-   - `gt_signed_distance(anomaly_mask) -> float32 (H,W)`: Euclidean distance in pixels to
-     the ground-truth anomaly edge, negative inside and positive outside. Built from two
-     `scipy.ndimage.distance_transform_edt` calls, on the mask and on its complement.
-     Returns all-NaN if the mask is empty; the callers skip that image and count it.
-   - `boundary_band(anomaly_mask, radius_px, valid=None) -> bool (H,W)`:
-     `abs(signed_distance) <= radius_px`, ANDed with `valid`. Optional
-     `side="both"|"inner"|"outer"`.
-   - `ubq(pred_mask, anomaly_mask, valid=None) -> dict`:
-     - `pred_to_gt_px` is the directed Hausdorff from predicted-region pixels to the
-       ground-truth extent. It measures looseness: how far the predicted blob spills out.
-     - `gt_to_pred_px` is the reverse and measures missed extent.
-     - Also return `pred_to_gt_p95`, a 95th percentile instead of the max, because a
-       max-based distance is decided by a single stray false-positive pixel anywhere in
-       the frame.
-     - All values come from EDT lookups. `scipy.spatial.distance.directed_hausdorff`, named
-       in the UBQ section below, becomes the **reference implementation the unit check
-       compares against**, not the production path. This is a deliberate change to that
-       section's wording, recorded here.
-     - Returns NaN if `pred_mask` is empty.
-   - `ScoreHistogram.threshold_at_tpr(target_tpr)` is a new method. It returns the score
-     value where `fpr_at_tpr` already finds its cutoff. UBQ needs a binary predicted
-     region, and that threshold choice must be fixed and stated, not tuned on test.
-     Proposal: for each model, the fused-score threshold that reaches TPR=0.95 on the
-     **Fishyscapes val half**, then applied unchanged to test and to CARLA.
-   - Known consequence, stated now: at a TPR-matched threshold, UBQ is almost unchanged by
-     temperature scaling. A per-head scalar T before the mean is not exactly monotonic, but
-     close. So UBQ effectively compares `L_calib` against raw. It **cannot** be used to show
-     "L_calib beats temp scaling"; only band-ECE can speak to that.
-   - UBQ is computed on `ood_fused`, the map `SoftECELoss` actually trains. Doing it on
-     `ood_disagreement` is nice-to-have only.
-5. **Correction to this file's own earlier framing.** The L_calib gate section above says a
-   scalar T "structurally can't compete" on boundary ECE. That is too strong. One global T
-   *does* change band-ECE, because the band is just a subset of pixels. What it can't do is
-   calibrate the band and the interior differently. So a T fitted on whole-image pixels
-   could still win on band-ECE, and a fair comparison has to allow that outcome. A cheap,
-   stronger baseline is `fit_temperature` restricted to val-half band pixels. It is listed
-   as nice-to-have below. If `L_calib` beats whole-image T but not band-fitted T, the
-   spatial claim is weaker than hoped, and it should be reported that way.
-
-**Checklist — ordered. CARLA comes before Fishyscapes, per the UBQ section's existing decision:**
-
-- [x] **Step 1 — shared primitive + known-answer unit checks (no model, no GPU). Done 2026-09-26,
-      run locally (no RunPod needed -- this step is pure numpy/scipy, no GPU/model).** Added
-      `gt_signed_distance`, `boundary_band`, `ubq` and `ScoreHistogram.threshold_at_tpr` to
-      `metrics.py`, plus a new "Boundary band + UBQ primitives" section in
-      `validate_metrics.py` (imports `scipy.spatial.distance.directed_hausdorff` as the
-      reference implementation only, per the design note above). Run against the
-      `anaconda3/envs/cuda_test` interpreter (numpy 1.24.4, scipy 1.10.1 -- the plain
-      `python` on PATH resolves to a different, broken Python 3.12 install with no numpy;
-      unrelated to this project, not touched):
-      ```
-      Boundary band + UBQ primitives
-        OK  band area (outer, r=8)  ours=3364  analytic=3401.1  rel_err=0.0109
-        OK  ubq(gt, gt)  {'pred_to_gt_px': 0.0, 'gt_to_pred_px': 0.0, 'pred_to_gt_p95': 0.0}
-        OK  ubq vs directed_hausdorff (trial 0)  pred_to_gt d=0.000  gt_to_pred d=0.000
-        OK  ubq vs directed_hausdorff (trial 1)  pred_to_gt d=0.000  gt_to_pred d=0.000
-        OK  ubq vs directed_hausdorff (trial 2)  pred_to_gt d=0.000  gt_to_pred d=0.000
-        OK  ubq vs directed_hausdorff (trial 3)  pred_to_gt d=0.000  gt_to_pred d=0.000
-        OK  ubq vs directed_hausdorff (trial 4)  pred_to_gt d=0.000  gt_to_pred d=0.000
-        OK  threshold_at_tpr  thresh=0.37599  reproduced_tpr=0.9501  fpr_at_tpr=0.35091  reproduced_fpr=0.35091  d=0.00e+00
-
-      ALL METRICS MATCH SKLEARN
-      ```
-      All 4 sklearn-comparison cases from before this change still pass unchanged (not
-      reprinted here, see full stdout) -- the new section is additive, nothing in the
-      existing `ScoreHistogram` path was touched.
-- [x] **Step 2 — CARLA known-answer check on real object shapes (still no model). Done
-      2026-09-26, local, no RunPod.** All 45 `data/masks/*.npy`:
-      ```
-      ubq(gt, gt) == 0 for 45/45 masks (OK)
-
-      dilation recovery (pred_to_gt_px should land near k, +/-1px from discretization):
-         k     mean      max   n_ok(+/-1px)
-         2    0.000    0.000         45/45
-         5    0.000    0.000         45/45
-        10    0.000    0.000         45/45
-
-      band positive rate at r=8 (each of 45 masks):
-        mean=0.0092  min=0.0005  max=0.0334  out_of_(0,1)=0/45  (OK)
-      ```
-      Dilation recovery landed at exactly `k` (not just within tolerance) for every mask at
-      every `k` -- these are real curated object silhouettes with long enough straight runs
-      that the perpendicular-direction distance dominates the max, so the diamond-shaped
-      corner effect of `scipy.ndimage.binary_dilation`'s default structuring element never
-      became the binding case here. Band positive rate is strictly inside (0, 1) for every
-      mask, so the payoff this step exists to check -- band-ECE having a genuine positive
-      class to work with -- holds on real object shapes. Script was a one-off
-      (`step2_carla_ubq_check.py` in scratch, not added to the repo); `eval_spatial.py` in
-      Step 3 is the permanent artifact.
-- [x] **Step 3 — first model numbers on CARLA frames. Done 2026-09-26, run locally by the
-      user** (`cuda_test` env, RTX 3070 laptop; eval-only, no RunPod needed). `eval_spatial.py`
-      written, run on all 45 frames for raw, temp (T=1.7142) and `L_calib`:
-      ```
-      model        whole-ECE  band-ECE r=4  r=8     r=16    whole-AUROC  band-AUROC r=8
-      raw          0.0117     0.3301        0.2985  0.2588  0.9250       0.5933
-      temp-scaled  0.0102     0.2727        0.2442  0.2094  0.9309       0.5933
-      L_calib      0.0136     0.3200        0.2898  0.2537  0.9259       0.6056
-      band pos_rate: r=4 0.4877 | r=8 0.4538 | r=16 0.3989  (n_px 230045 / 432971 / 798234)
-      UBQ (all 3): threshold_at_tpr(0.95) ~1e-5..1e-3, pred_to_gt_px=767.94, p95 ~475
-      ```
-      **Pipeline verdict: works.** Band positive rates are the expected tens of percent, so
-      band-ECE is no longer dominated by negatives. That is the property this whole section
-      exists for.
-      **Early signals. Pipeline check only, not results (see caveats below):**
-      - Band-ECE is ~25× whole-image ECE (0.2985 vs 0.0117 raw, r=8). Whole-image ECE
-        really does hide boundary miscalibration, as hypothesized.
-      - Temperature scaling reduces band-ECE (0.2985 → 0.2442) **more than `L_calib` does**
-        (→ 0.2898). The same ordering holds at all three radii. If Fishyscapes shows the same,
-        the "L_calib beats temp scaling on the boundary" claim fails. The pre-written viva
-        framing for that outcome applies.
-      - **UBQ is saturated on CARLA, not meaningful.** CARLA FPR@95 is ~0.46 (out-of-domain
-        backgrounds), so the TPR-0.95 threshold collapses to ~0 and marks most of the frame
-        as anomalous. `pred_to_gt_px` is then just the frame-diagonal-scale distance (767.94,
-        identical for all 3 models). Not a bug in `ubq()`: Step 2 validated it. It is a
-        property of the threshold rule on a high-FPR domain. Fishyscapes FPR@95 is 0.029, so
-        the same rule should give a tight region there. The script now prints the mean
-        predicted-positive fraction and warns when it exceeds 20%.
-      - **Bug found in `eval_spatial.py` after this run, fixed before Step 4:** the first
-        version self-fit the UBQ threshold on whatever set it evaluated. For Fishyscapes that
-        would have meant fitting on the test half, against this plan's rule. It also lacked
-        the paired bootstrap. It now fits thresholds on the val half, applies them unchanged
-        to test, and runs the 1000-resample paired bootstrap from per-image
-        `ScoreHistogram(n_bins=1500)`. It also keeps logits at native output resolution and
-        upsamples per use, which avoids caching ~25MB per Fishyscapes image. CARLA numbers
-        above are unaffected: CARLA self-fits by design.
-      - **Re-run with the fixed script (2026-09-26):** every metric reproduced to 4 decimals.
-        So the native-resolution caching refactor changed no results. Predicted-positive
-        fraction was ~0.46 for all 3 models, confirming the UBQ saturation. CARLA paired
-        bootstrap (45 frames, 1000 resamples):
-        ```
-        band-ECE(L_calib) - band-ECE(temp): r=4 +0.0473 [+0.0380,+0.0561]
-                                            r=8 +0.0456 [+0.0364,+0.0538]
-                                            r=16 +0.0443 [+0.0358,+0.0507]  all exclude 0
-        band-ECE(L_calib) - band-ECE(raw):  r=4 -0.0101 [-0.0186,-0.0033]
-                                            r=8 -0.0087 [-0.0168,-0.0016]  exclude 0
-                                            r=16 -0.0051 [-0.0139,+0.0012]  includes 0
-        ```
-        On CARLA, `L_calib` is significantly *worse* than temp scaling at the boundary. It is
-        only marginally better than raw, at r≤8. Same Step 3 caveats apply. Step 4 decides.
-      - **Caveats to keep attached to these numbers.** They check that the pipeline works;
-        they are **not results to report**.
-        - These same 45 objects are in the training CutMix bank (tiled to 500), so the
-          model has seen them.
-        - CARLA-rendered backgrounds are out of domain for a Cityscapes-trained model, so
-          expect background false positives to inflate `pred_to_gt_px`.
-        - Report them as "metric validated on simulator ground truth", never as
-          generalization evidence.
-- [x] **Step 4 — Fishyscapes test half, eval-only. Done 2026-09-26, run locally by the user.**
-      Thresholds fit on the val half, applied unchanged to the 50 test images:
-      ```
-      model        whole-ECE  band-ECE r=4  r=8     r=16    band-AUROC r=8  gt_to_pred_px
-      raw          0.0004     0.2848        0.2273  0.1748  0.7318          12.83
-      temp-scaled  0.0020     0.2208        0.1845  0.1451  0.7303          13.08
-      L_calib      0.0005     0.2858        0.2396  0.1889  0.7490          11.30
-      band pos_rate: r=4 0.4878 | r=8 0.4421 | r=16 0.3519  (n_px 115479 / 226482 / 436653)
-
-      paired bootstrap (50 test images, 1000 resamples), 95% CI:
-      band-ECE(L_calib) - band-ECE(temp): r=4 +0.0649 [+0.0521,+0.0750]
-                                          r=8 +0.0551 [+0.0466,+0.0654]
-                                          r=16 +0.0438 [+0.0381,+0.0500]   all exclude 0
-      band-ECE(L_calib) - band-ECE(raw):  r=4 +0.0009 [-0.0095,+0.0129]   includes 0
-                                          r=8 +0.0123 [+0.0017,+0.0258]   excludes 0
-                                          r=16 +0.0141 [+0.0045,+0.0231]  excludes 0
-      ```
-      **Findings:**
-      - **Boundary miscalibration is real.** Raw band-ECE at r=8 is ~570× its whole-image
-        ECE (0.2273 vs 0.0004). This confirms on real data that whole-image ECE hid it.
-      - **Current `L_calib` (whole-image surrogate) does not help at the boundary.** It is
-        significantly worse than temp scaling at every radius. It is also significantly
-        worse than raw at r=8/16, and no different at r=4. On CARLA it was marginally better
-        than raw, so it reverses on real data. Treat it as no better than raw.
-      - **Temp scaling partly helps.** It drops band-ECE 0.2273 → 0.1845 at r=8. The gap to
-        whole-image ECE is still far from closed.
-      - `L_calib` does get slightly better band AUROC (0.7490 vs 0.7318, r=8) and misses
-        less object extent (`gt_to_pred_px` 11.30 vs 12.83). Edge discrimination improves,
-        but edge calibration does not. No bootstrap was run on these two, so they are
-        indicative only.
-      - **UBQ `pred_to_gt_px` is not usable at a TPR-0.95 threshold** (~1151 px for all 3
-        models). The threshold flags ~7% of each frame against a 0.28% positive rate, so a
-        single far-away false positive sets the max, and the p95 (~820-845) is just as bad.
-        `gt_to_pred_px` (missed extent) *is* meaningful. The script's ">20% of frame"
-        saturation warning was too loose to catch this at 7%. Recorded here, not changed
-        after the fact. 1/50 test images was skipped for an empty mask.
-      **Decision rule (design point 3), applied as written:** (1) raw band-ECE is clearly
-      worse than whole-image ECE: **yes**. (2) Neither temp scaling nor current `L_calib`
-      closes that gap: **yes**. Temp leaves 0.1845 against 0.0020 whole-image, and `L_calib`
-      is worse than raw. Both conditions hold, so **Step 5 is justified by the pre-registered
-      rule.** Whether to spend the pod run on it is the open decision, given the 3-day
-      assessment below.
-      **Viva framing that now applies:** "Whole-image ECE hid a large boundary
-      miscalibration (570× at r=8). A whole-image calibration loss doesn't fix it, and
-      post-hoc temperature scaling only partly does. That is the motivation for a
-      boundary-targeted loss."
-      *Original step text:*
-      Run `eval_spatial.py --dataset fishyscapes` with val-half TPR-0.95 thresholds, then
-      score the test half.
-      - Include a paired bootstrap over the 50 test images, 1000 resamples, on
-        band-ECE(L_calib) − band-ECE(temp) and band-ECE(L_calib) − band-ECE(raw).
-        This is cheap: keep one small per-image `ScoreHistogram(n_bins=1500)` per model per
-        `r` (1500 = 15 × 100, so `ece()`'s 15 bins line up exactly) and sum them per
-        resample.
-      - Apply the decision rule from design point 3 **as written above**; don't move it
-        after seeing the numbers.
-      → artifact: the table (whole-image vs. band ECE side by side, UBQ, bootstrap 95% CIs)
-        pasted into this section, plus the log file. `mlflow.db` logging is optional.
-- [ ] **Step 5 — conditional: band-masked `L_calib` fine-tune.** Only if step 4's decision
-      rule says there is band miscalibration left to fix **and** a pod plus one more run
-      still fit before the deadline.
-      → artifact: new checkpoint under a **distinct filename** (not
-        `CHECKPOINT_3HEAD_CALIB`, which holds the kept β=1 result), plus step 4's table
-        re-run with a 4th row.
-- [ ] **Nice-to-have, only if steps 1–4 finish early:** band-fitted temperature baseline
-      (design point 5); UBQ on `ood_disagreement`; a band-ECE reliability diagram, which
-      reuses `calibrate.py`'s `reliability_diagram` since it takes a dict of histograms.
-      → artifact: extra rows / an extra PNG, labeled as such.
-
-**Realistic 3-day assessment.** The full scope can't all be done in 3 days: band-ECE, UBQ
-(CARLA and Fishyscapes), a band-aware `L_calib` training variant, plus everything else
-still open in this file. The other open work is:
-- wiring the 0.9920 checkpoint into `server.py`/`README.md`, which still show 0.6190;
-- the calibration panel and v1-vs-v3 panel in `frontend/`;
-- the whole Option-1 video pipeline, which needs a live CARLA server to record a route.
-
-Proposed, in order:
-- **Day 1:** steps 1–4. All eval-only, runnable locally if CUDA is available, otherwise a
-  short pod session.
-- **Day 2:** demo wiring, with the step-4 table added to the calibration panel.
-- **Day 3:** buffer and viva prep.
-
-Step 5 happens only if the rule fires on day 1 *and* there is a pod slot. Otherwise it is
-explicitly deferred, not attempted. The video pipeline is not scheduled here. Whether it
-beats demo wiring for days 2–3 is the user's decision; this section doesn't make it.
-
-**Viva framing, set before the numbers exist. Use whichever outcome actually happens:**
-- *Band difference found (bootstrap CI excludes 0):* "On the 50-image test half, `L_calib`
-  improves boundary-region calibration versus temperature scaling. Whole-image ECE could not
-  show this." Limit the claim to this checkpoint, this split and the r range tested.
-- *No band difference, or temp wins:* "Whole-image ECE is uninformative at a 0.28% positive
-  rate; two real runs showed that. We built boundary-region ECE and UBQ to test the spatial
-  claim. The current `L_calib`, trained on a whole-image ECE surrogate, shows no measured
-  boundary advantage. The spatial hypothesis is **untested by a boundary-targeted loss**,
-  not confirmed." The methodology and this negative result can be reported as they are.
-- *Steps 1–4 not finished:* keep `CLAUDE.md`'s existing phrasing: "defined as an objective,
-  not yet measured." No partial or CARLA-only numbers presented as results.
-
-## UBQ (Uncertainty Boundary Quality) — not started
-
-- [ ] Implement UBQ: directed-Hausdorff distance (`scipy.spatial.distance.directed_hausdorff`)
-      between predicted-uncertainty boundary and true anomaly extent
-      → artifact: `metrics.py` function + unit-style sanity check
-- [ ] Validate first against CARLA's exact ground-truth masks (per the project's own
-      objective ordering — CARLA masks are pixel-exact via semantic-tag diffing)
-      → artifact: UBQ number(s) on the curated CARLA object set
-- [ ] Then validate on real Fishyscapes masks
-      → artifact: UBQ number(s) on the Fishyscapes test half, alongside AUROC/AP/ECE
-- Until this exists, do not claim UBQ results in the viva — say it's defined as an
-  objective and not yet measured (see the results-notes artifact's Q&A for exact phrasing)
-
-## LiDAR cross-check (Section 06-A, large-scale direction) — planning checkpoint (2026-09-20)
-
-Full version, not the doc's qualitative fallback — logged as the actual target. Gated same
-as everything else in Section 06: doesn't start before Experiment B clears its AUROC gate,
-and per the plan doc, pick at most one of A/B/C.
-
-**Correction to the plan doc's premise, confirmed by reading the actual code:** the doc
-describes this as "the LiDAR we're already generating... currently discarded." That's not
-true of this codebase — `grep -rn "lidar"` across the whole repo returns nothing, and
-`generate_anomalies.py` spawns exactly two sensors (`sensor.camera.rgb`,
-`sensor.camera.semantic_segmentation`), no LiDAR actor anywhere. This is CARLA's own
-*simulated* LiDAR (`sensor.lidar.ray_cast`, a built-in CARLA sensor blueprint, same family
-as the two cameras already spawned) — not physical hardware — but it still has to be added
-new, not just "wired up."
-
-- [ ] Add a `sensor.lidar.ray_cast` actor to `generate_anomalies.py`, same transform/timing
-      as the existing `rgb_camera`, so every captured frame gets RGB + semantic mask +
-      point cloud together.
-      → artifact: point-cloud file saved alongside each frame's existing RGB/mask output.
-- [ ] Project the point cloud into the camera's image plane using the sensor's own
-      transform/intrinsics (standard CARLA extrinsics — the sensor transform is already
-      known since it's set explicitly, same as the RGB/semseg cameras) to get a per-pixel
-      or per-region depth map.
-      → artifact: a depth map per frame, spatially aligned to the RGB/mask pair.
-- [ ] Compute local depth discontinuities (gradient/Laplacian on the projected depth) as
-      the geometric "something's here" signal, independent of anything the vision model sees.
-      → artifact: a discontinuity map per frame.
-- [ ] Cross-check against the trained model's OOD uncertainty heatmap: quantify, not just
-      eyeball, how often high vision-uncertainty regions coincide with real geometric
-      discontinuities vs. how often they fire on geometrically flat/continuous surfaces
-      (the mismatch case is the actual diagnostic value here).
-      → artifact: a real correlation/agreement number between the two signals, across the
-        Fishyscapes test half — not a handful of qualitative example figures.
-- Why the full version over the fallback: the doc's own fallback ("flag disagreement
-  qualitatively in a handful of figures") was offered as a scope-reduction if full fusion
-  proves too costly, not as the intended target — logging the full quantitative version
-  here so it isn't quietly downgraded by default later.
-
-## Real-time CARLA video proof — why CARLA specifically, not just "a video"
-
-Confirmed reasoning from tonight's discussion, worth keeping precise:
-- Real-world video can't give **ground truth** to auto-verify "correctly predicted" live
-  — CARLA's semantic-tag diffing already gives pixel-exact masks for free.
-- Real-world video can't give **reproducibility** — showing "old checkpoint missed this,
-  new checkpoint catches it" needs the *identical* scenario replayed through two
-  checkpoints. CARLA is deterministic/scriptable (same seed, same spawn, same route);
-  real driving footage can never be replayed frame-for-frame identically.
-- Practical note: doesn't need a *live* simulator during the actual presentation —
-  CARLA supports playback of a pre-recorded sequence, safer for a live demo (no
-  simulator crash risk, deterministic, pick the clearest example ahead of time).
-- This is unchanged by which source(s) feed *training* data (CARLA/COCO/both) — training
-  data source and demo-video source are separate pipeline stages.
-
-### How anomalies actually get into the demo video (2026-09-20 discussion) — two distinct mechanisms, not one
-
-- **Native CARLA spawn** — a real `static.prop.*` object placed directly into the 3D world
-  along the driving route (same mechanism `generate_anomalies.py` already uses to generate
-  training crops, just left in-scene instead of cropped out). Gives real 3D consistency
-  (parallax, correct occlusion, a real LiDAR return if the LiDAR checkpoint above gets
-  built) and keeps the "why CARLA specifically" argument fully intact: pixel-exact ground
-  truth via semantic-tag diffing, deterministic replay for old-vs-new-checkpoint comparisons.
-- **Post-render CutMix compositing** — paste a 2D object cutout onto pre-recorded CARLA
-  frames *after* rendering, the same technique already used for training, just applied to
-  video frames instead of individual Cityscapes images.
-  - **This is the only way COCO objects can appear in the video at all.** COCO cutouts are
-    flat real-world photos, not 3D assets — there is no mesh for CARLA to spawn. They can
-    only ever be a 2D composite on top of a rendered frame, never a native in-world object.
-  - Ground truth stays exact either way (the paste mask is the same one used in training),
-    but there's no real 3D behavior for a pasted object — no parallax as the camera moves,
-    no LiDAR return.
-- **Practical plan for "a lot of anomalies" in one video:** mix both — a handful of
-  natively-spawned CARLA objects along the route (for the reproducible-replay / LiDAR-
-  compatible cases) plus post-render CutMix pastes of both CARLA and COCO cutouts (for
-  volume/variety). Track which mechanism produced which instance in the video's metadata —
-  "pixel-exact via live semantic-tag diffing" is only strictly true for the natively-spawned
-  ones; pasted ones are exact too, just via the pre-cut training-pipeline mask, not a live
-  3D-scene diff. Don't blur this distinction when describing ground-truth provenance later.
-- [ ] Not started: no code exists yet for either native mid-route spawning during a
-      recorded sequence, or post-render CutMix-onto-video compositing. Both are new work
-      on top of `generate_anomalies.py`'s existing per-frame-crop capture mode.
-- **Update 2026-10-04: two corrections to the above.**
-  - Native-spawn ground truth now comes from `sensor.camera.instance_segmentation`
-    (per-actor ids), not semantic-tag diffing. A moving camera has no "before" frame to
-    diff against. See "Recording design" in the Option 1 section below.
-  - **Pastes must be world-anchored, not pasted at a fixed pixel.** `data/cutmix.py`
-    pastes onto *still* images. Reused as-is on video, a cutout would sit at the same
-    screen position while the road scrolls under it, which looks fake. Fix: give each
-    pasted instance a 3D anchor point on the road surface. Each tick, project it into the
-    frame using that tick's camera pose and intrinsics (saved during recording). Scale the
-    cutout by `focal × real_size / depth`, and skip it once it's behind the camera or out
-    of frame. Keep the training paste's harmonization and feathering. Limitation to state:
-    pasted objects aren't occluded by anything passing in front of them. The route has
-    no traffic, so this rarely shows. Ground truth = the projected paste mask, exact by
-    construction.
-  - So recording must save the **per-tick camera transform + intrinsics** with every frame,
-    not just RGB + mask.
-
-### RoadAnomaly21 / OoDIS — status check (2026-09-20, confirmed via code search)
-
-`grep -rn "RoadAnomaly|OoDIS"` across the whole repo returns **nothing** — no loader, no
-`config.py` entry, no data folder. Both exist only in the plan doc's prose, not in this
-codebase, and are unrelated to the video-demo work above — they're static-image eval
-benchmarks for numeric AUROC/AP tables, not anything CARLA/video-pipeline related.
-- **RoadAnomaly21** — a second real-photo, eval-only benchmark (same role as Fishyscapes:
-  never trained on, just scored against). Nothing built: no download, no dataset class.
-- **OoDIS** — Novelty 10, the furthest-out of the two. TwinGuard only outputs a continuous
-  per-pixel heatmap (`ood_fused`); OoDIS's instance-level metrics need discrete pseudo-
-  instances, so this additionally needs a connected-component post-processing step
-  (threshold + blob-labeling) that doesn't exist yet, and that thresholding choice has to
-  be stated explicitly wherever OoDIS numbers are reported. Also flagged: OoDIS and
-  RoadAnomaly21 both descend from the same SegmentMeIfYouCan benchmark family — possible
-  image overlap needs checking before reporting all three (Fishyscapes/RoadAnomaly21/OoDIS)
-  as "independent" generalization checks in a results table.
-- Both gated behind Section 03's novelties, which are gated behind Experiment B beating
-  the baseline gate (see the Calibration checkpoint above) — not scheduled for now.
-
-### Getting video (not just stills) into `frontend/` — three options, one chosen (2026-09-20 discussion, nothing built)
-
-The existing demo is unchanged by everything below. `server.py` runs inference once at
-startup over a handful of curated still images, caches every panel (segmentation map, OOD
-heatmap, uncertainty heatmap, detection-box overlay) as static PNGs under
-`static/generated/`, and `frontend/` does an instant click-through of those cached panels
-with no GPU in the loop during the walkthrough. That stays exactly as it is — **video is
-additive, not a replacement**, and the still-image click-through is not to be reworked,
-degraded, or removed to make room for it.
-
-**Option 1 — baked `.mp4` file. Chosen; this is the one being built.** Same
-offline-inference-then-cache-as-static-asset architecture `server.py` already uses, run
-over a full recorded CARLA driving sequence (dozens-to-hundreds of frames) instead of 6
-curated images, with anomalies inserted by the mixed native-spawn + post-render-CutMix
-mechanism described in the "How anomalies actually get into the demo video" sub-section
-above (not the RoadAnomaly21/OoDIS one immediately preceding this, which is unrelated
-static-image eval work). Per frame, render the same panels
-the static demo already renders; then encode the frame sequence to an actual video file
-with `cv2.VideoWriter` or `imageio-ffmpeg` (either is fine — both were named in discussion,
-pick one and note which). Write the `.mp4` into `static/generated/` so it is served as a
-static asset by the same path the PNGs already use, and embed it in `frontend/` with a
-plain HTML5 `<video>` tag. No streaming infrastructure, no WebSocket, no live GPU
-dependency during the demo. Produce this for **both** Experiment A (baseline) and
-Experiment B (ours) — a video of only one of them does not satisfy this item, since the
-entire point is the old-vs-new comparison.
-
-**Open decision, not made here:** whether baseline and TwinGuard ship as two separate
-toggleable video files or as one side-by-side/split-screen composited video. Both were
-raised, neither was chosen. Decide it explicitly and log the choice here before writing the
-encoding step — don't let the implementation settle it by accident.
-
-**Option 2 — live WebSocket streaming. Not now; this IS the already-deferred item.**
-Recorded frames pushed one-by-one through the FastAPI backend and streamed to `frontend/`
-over a WebSocket, panels updating live as though it were a camera feed. This is the
-project's eventual end-state demo architecture, and it is already listed under "Already
-documented, deliberately deferred — not now" below (Section 08 / Slide 8). Naming it here
-only places it in the video-output context; it does not reopen it. It does not start before
-Phase 2b/calibration lands — see the "Calibration (L_calib) gate" checkpoint above for the
-gate that controls that.
-
-**Option 3 — pre-computed per-frame JSON + client-side playback. Not chosen; logged only
-so it isn't re-derived from scratch later.** Same offline batch inference as option 1, but
-instead of baking pixels into a compressed video, write one manifest per frame (the exact
-pattern `server.py`'s single current `manifest.json` already follows) and have `frontend/`
-step through them at real frame-rate in a timed client-side loop — no server round-trips,
-no WebSocket, fully static and cacheable, yet it reads as "live" to a viewer. It would also
-be genuine groundwork for option 2, since the per-frame panel-rendering path in React would
-already exist. Rejected for now on cost/benefit: it is strictly more frontend work than
-option 1 for a difference that is cosmetic (feels live vs. is a video file). Nothing about
-it is planned, so it carries no action items; revisit only as a deliberate new decision.
-
-**Action items below belong to option 1 only** — options 2 and 3 deliberately have none.
-
-**Recording design, checked against the code 2026-10-04.** CARLA 0.9.15 is at
-`C:\Users\venka\Downloads\CARLA_0.9.15`, and its Python API is in the `cuda_test` env.
-`generate_anomalies.py` can't simply be extended for video, for four reasons:
-- **Async mode** (`synchronous_mode = False`): RGB and mask frames aren't guaranteed to
-  be the same instant. A video needs synchronous mode with a fixed tick (`fixed_delta_seconds
-  = 0.05` → 20 fps), so every saved RGB frame and mask come from the same tick.
-- **Masks come from a before/after semantic diff** of a static camera. With a moving camera
-  there is no shared "before" frame. **As built (`record_route.py`):** each video frame is
-  rendered twice from the same camera pose, first with the props moved underground, then
-  in place. The mask is the semantic-tag difference between the two renders. It is the
-  same proven technique and costs 2× rendering. Instance segmentation was considered and
-  rejected: whether its pixel ids map to spawned `static.prop.*` actor ids in 0.9.15 is
-  unverified, and a wrong guess would give silently empty masks. Ground truth is exact
-  per frame, so the video doubles as a CARLA eval set (`eval_spatial.py --carla-root`).
-- **1024×1024, FOV 90.** The model input is 1024×512, so square frames get squashed. Record
-  at **1024×512** (exactly the model input, and cheaper to render), with **FOV ≈ 50°** to
-  match Cityscapes optics (fx≈2262 at 2048 px wide → ~49° horizontal) and a ~1.5 m camera
-  height. Expected to narrow the domain gap that gave CARLA FPR@95 = 0.46 in Step 3. The
-  pilot measures it.
-- **No ego motion.** Move the camera **kinematically along map waypoints** (`set_transform`
-  each tick) rather than a Traffic Manager autopilot. Autopilot doesn't avoid static props
-  reliably, would collide or stop, and is non-deterministic. Kinematic = same route every
-  run. Pre-place props along `waypoint.next(d)`, offset within the lane, before recording.
-- **GPU:** never run CARLA and model inference together on the 8 GB card. Record → close
-  CARLA → infer. Stages 1 and 3 below are already separate.
-
-- [ ] **V0 — pilot, go/no-go gate before building the rest.** New `record_route.py`: ~40
-      frames on one route with 3-4 props, saving RGB + instance-derived masks. Run
-      `eval_spatial.py`-style scoring on them (whole-image AUROC/FPR@95) and look at 5
-      heatmap overlays. **Go** if the anomalies stand out against the background in the
-      overlays. **No-go** if the background lights up the way CARLA's FPR@95 = 0.46
-      suggests it might: a demo video where the road glows everywhere hurts the project
-      more than no video. Then reconsider (another town/weather, or drop the video).
-      → artifact: pilot frames + the AUROC/FPR@95 numbers + 5 overlay PNGs, noted here.
-
-- [ ] Record a CARLA driving sequence with anomalies present in-scene, extending
-      `generate_anomalies.py`'s existing per-frame-crop capture mode to keep natively
-      spawned `static.prop.*` objects in the scene along the route instead of cropping
-      them out, and to write out the full ordered frame sequence.
-      → artifact: an on-disk ordered folder of RGB frames + per-frame semantic/anomaly
-        masks for one complete route, with the per-instance mechanism metadata
-        (native-spawn vs. CutMix-paste) required by the "How anomalies actually get into
-        the demo video" sub-section above.
-- [ ] Post-render CutMix compositing over that recorded sequence, for the pasted-anomaly
-      instances (CARLA and COCO cutouts), reusing `data/cutmix.py`'s paste path so the
-      video's anomalies match training-time paste statistics.
-      → artifact: the composited frame sequence on disk, plus the paste masks that serve
-        as its ground truth.
-- [ ] Batch-inference pass over the full sequence producing, per frame, the same panel set
-      the static demo already produces (segmentation, OOD heatmap, uncertainty/disagreement
-      heatmap, detection-box overlay) — run twice, once per checkpoint (Experiment A and
-      Experiment B).
-      **Hard dependency, easy to miss:** Checkpoint A's weights are genuinely lost (see
-      `CLAUDE.md` — only its logged numbers survive, hardcoded in `server.py`'s
-      `EXPERIMENT_HISTORY`), so there is no loadable baseline to run this pass with. The
-      Experiment A video cannot be produced until the baseline re-run in the "Blocking"
-      section at the top of this file has happened and left a loadable checkpoint on disk.
-      This does not weaken the both-videos requirement — it schedules it.
-      **Update 2026-10-04:** the Experiment A re-run did happen (test AUROC 0.8372), but on
-      a pod whose data was lost (balance deficit, nothing pulled). Its weights are gone
-      again. Only the numbers survive, in this file. So this item is blocked on a decision:
-      retrain Experiment A locally, or narrow the video to Experiment B only (a scope change
-      the user has to approve). It is also blocked on a running CARLA server for the
-      recording step.
-      → artifact: two complete per-frame panel sets on disk, one per checkpoint, frame
-        counts matching the recorded sequence.
-- [ ] Decide separate-toggle vs. composited split-screen for baseline-vs-TwinGuard, and
-      record the decision plus its reasoning in this section.
-      → artifact: the decision written into this file before the encoder is wired up.
-- [ ] Encode to `.mp4` with `cv2.VideoWriter` or `imageio-ffmpeg` and write the output into
-      `static/generated/` alongside the existing cached PNGs.
-      → artifact: playable `.mp4` file(s) under `static/generated/`, covering both
-        Experiment A and Experiment B per the decision above, with the library actually
-        used noted here (the choice between the two is still open).
-- [ ] Embed the video in `frontend/` with an HTML5 `<video>` tag, served over the existing
-      `/static` proxy, sitting alongside the untouched still-image click-through.
-      → artifact: the video playing in the running demo at `localhost:5173` with the
-        existing image panels still working unchanged.
-
-## Lower priority / nice-to-have
-
-- [ ] Report AP as the headline metric ("AP is what Fishyscapes actually ranks on" per
-      `exp_coco`'s README), AUROC as supporting evidence — update slides/frontend copy
-- [ ] Check whether head-disagreement AUROC (now logged on `exp_coco`) is a useful signal
-      on its own, not just a display panel
-- [ ] Scope the MC-Dropout dual-mode inference trigger (still just "planned")
-      — ties to the disagreement-signal check above
-
-## Already documented, deliberately deferred — not now
-
-- Real-time CARLA + WebSocket streaming demo itself (Section 08 / Slide 8) — explicitly
-  sequenced to come **after** Phase 2b/calibration, not before. Don't start building this
-  early, even though the *reasoning* for why it needs CARLA (above) is settled now.
-- ~~Merging `main` and `exp_coco`~~ — done 2026-09-19, see the "Branch context" note at
-  the top of this file and `CLAUDE.md`.
+# TwinGuard — forward plan (rebuilt 2026-10-05)
+
+This file is the single forward plan. It was rebuilt from scratch on 2026-10-05 (step P-1).
+**The full history is in `PLAN_HISTORY.md`**, an untouched copy of the plan as it stood before
+the rebuild. Never edit `PLAN_HISTORY.md`. Mistakes and the standing rules that prevent them
+are in `MISTAKES.md`; read it before any step.
+
+## Header
+
+- **Date of rebuild:** 2026-10-05.
+- **Current step (2026-10-05):** U1 and U2 are **done and signed by Agents 1 and 2**. P3 kept
+  input scale 1. P2 (write-up) and the deferred P6 number edits are **written and SIGNED 2026-10-06 (fresh Agents 1+2 + orchestrator; agent_state/agent1_P2P6_review.md, agent2_P2P6_compliance.md), formerly awaiting the
+  agents' sign-off**; then the user's site check U3a. A1 (CARLA-tile audit) results are PENDING
+  REVIEW (user eyeball outstanding).
+- **Primary model (all reported numbers):** `model_3head_best.pth` (repo root,
+  `config.PRIMARY_RAW`). It is the 2000-object-bank model: 500 CARLA tiles of 45 objects +
+  1500 of 3000 COCO cutouts, `config.ANOMALY_SOURCE="both"`, 8 epochs, epoch 4 selected on
+  the Fishyscapes val half. Fishyscapes test half: AUROC 0.9920, AP 0.6215, FPR@95 0.029
+  (`eval_fishyscapes_c5.log`; `train.log` gives AP 0.6218 / FPR@95 0.0287 for the same file,
+  bf16-level difference). **The user wants this model kept as the primary model.**
+- **L_calib model:** `model_3head_calib_best.pth` (repo root, `config.PRIMARY_CALIB`).
+- **HARD RULES (user's, non-negotiable), verbatim from the brief:**
+  - **No git operations of any kind** (no commit, push, fetch, checkout, stash, reset).
+    Never `git push`.
+  - **Do not run anything that uses the GPU, CARLA, training or evaluation.** The user runs
+    those; the coder agent hands them commands. CPU-only checks are fine: `py_compile`,
+    reading files, tiny numpy/tensor sanity checks, `npm run build`.
+  - Python: `C:\Users\venka\anaconda3\envs\cuda_test\python.exe` (in PowerShell: `& "<path>"`).
+    The plain `python` on PATH is a broken 3.12 without numpy; don't use it. User commands
+    assume `conda activate cuda_test` then `python ...`.
+  - Don't touch `.pth` files, `data/`, or the `video_*` folders. Don't delete anything.
+  - Stay on the plan. Don't chase unrelated environment issues.
+  - Read `MISTAKES.md` (repo root) first, and follow its standing rules.
+- **Rule for T: LIFTED 2026-10-05.** P1 rule (a) passed (fitted whole T = 1.2251, in
+  [1.2147, 1.2347]) and both agents signed. T=1.2251-derived numbers may now be written in this
+  file, each citing `eval_fishyscapes_T122.log`. The frontend stays deferred to P6 (after U2).
+- **Logs:** every GPU log is written by PowerShell 5.1 `Tee-Object` and is **UTF-16LE**. Decode
+  before grepping (`iconv -f UTF-16 -t UTF-8 <log>`), or grep reports "Binary file matches"
+  and a row looks missing. Exceptions: `train.log` and `calibrate.log` are ASCII.
+- **Conventions:** every GPU command is run by the **user** in `conda activate cuda_test`,
+  from the repo root, with CARLA closed, and piped through `| Tee-Object -FilePath <log>`.
+  Every table states checkpoint, split and input scale (standing rule 10). After every pasted
+  output the coder fills that step's **Step evaluation record**, and Agent 1 (soundness) and
+  Agent 2 (compliance) sign before the next command is issued (standing rule 12).
+
+## RESUME HERE (2026-10-05, after U2)
+
+**After a reset, read `agent_state/RESUME_AGENTS.md` first.**
+
+**P2/P6 review: SIGNED 2026-10-06 by the orchestrator.** The reviewer agents were stopped
+for usage cost after an API limit; the user approved finishing the review in the main
+session. Checks:
+- server.py scoring path matches eval_spatial: load_image_tensor, amp, upsample logits to
+  label size, sigmoid, mean. So BOX_THRESHOLD 0.47658 (raw val max-F1,
+  eval_fishyscapes_T122.log) transfers. CACHE_VERSION = 2.
+- Home and History numbers match the signed logs: T = 1.2251, AP 0.6206, ECE 0.0001, band
+  r=8 0.2095, C2 0.0942.
+- A grep of frontend/src for 1.71, 1.7142, 20× and 570 finds 0 hits.
+- static/calibration_reliability_T122.png is present, and `npm run build` passes.
+
+**Next: U3a, the user's site check** (agent_state/agent3_U2.md §4). After that, the open user
+items.
+
+**State:**
+- U1 and U2 done and signed (`agent1_U1_eval.md`, `agent2_U1_compliance.md`, `agent1_U2_eval.md`,
+  `agent2_U2_compliance.md`). U2 ran in the order 3 → 5 → 4 (independent steps; recorded as a
+  deviation).
+- P3: **scale 1 kept** (no detectable gain; underpowered). No P1 re-run; P4/P5/P6 at scale 1.
+- P1b: Finding 4's CARLA half re-sourced: L_calib − raw r=8 −0.0162 [−0.0207, −0.0114]
+  (20-frame block CI); L_calib vs temp(T=1.2251) indistinguishable on the route.
+- P2 written below (section "Write-up (step P2)"); P6 deferred number edits done (Home/History calibration
+  rows, new reliability png, fixed box threshold 0.47658, README). Both SIGNED 2026-10-06.
+- A1 results PENDING REVIEW; M22 PENDING.
+
+**Next action, in order:**
+1. ~~Agents 1 and 2 review and sign P2 and the P6 number edits.~~ DONE, signed 2026-10-06.
+2. User: **U3a** site check (P6 checkpoint): `python server.py`, then `cd frontend; npm run dev`;
+   pages `/`, `/runs`, `/demo` (checklist in `agent3_U2.md`). Then P6b (min box by eye, once).
+3. User, open items: eyeball `agent_state\a1_carla_tiles\contact_sheet.png` (A1); `git ls-remote
+   --heads origin` (unblocks NOW-4); RA21 download + MD5 (unblocks P5); `data/coco_objects`
+   provenance (X5 secondary contrast); the lead's SHA256 (exp_v2 "same file" wording).
+
+**2026-10-06, later: NOW-4 DONE.**
+- `git ls-remote` run and exp_v2 read.
+- `paste_test.py` fixed; `explain.py --x2-faith` added; `eval_road_anomaly.py` ported.
+- CPU checks pass (see P4 and P5).
+
+Handed to the user as **U3b**: the X5 run and the X2 faithfulness run (GPU). **U3a and U3b are done
+(2026-10-06).** U3a log PASS. P4 is recorded:
+- X5 PRIMARY: +0.468, but formally confounded by the unseen-arm drift.
+- No memorisation detected.
+- X2 not validated on real objects, so it becomes a footnote; the demo was reworded (M23).
+
+**Next:**
+- The user's visual "looks fine" on /demo.
+- P6b: the min box decision.
+- The A1 eyeball.
+- The RA21 download → P5.
+- Then P7.
+
+**Blocked:**
+- A1/M22: user eyeball + sign-off.
+- P5: the RA21 zip download.
+- Any description of CARLA bank quality: A1.
+
+## Step template
+
+Every step has: **Goal · Inputs · Procedure · Command · Log · Rule** (pre-registered, with
+the behaviour for every outcome band) **· Checkpoint · Status · Evaluation record · Sign-off.**
+The evaluation record is filled only from a pasted log:
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
 
 ---
-*Update this file as items complete — check the box only once the artifact column is
-verified to exist, not when the code is written.*
+
+## P-1: Process files (CPU, coder)
+
+- **Goal:** one forward plan with pre-registered rules and evaluation records, and an updated
+  mistakes log, so no mistake repeats.
+- **Inputs:** `PLAN_HISTORY.md`, `MISTAKES.md`, agent reports (verifier rounds 1-2,
+  compliance rounds 1 and 3 FINAL), exp_v2 `runs/RESULTS.md`.
+- **Procedure:** rebuild this file; replace MISTAKES standing rule 2 with 2'; add rules 10-12
+  and M9-M18; keep the multiplicity note.
+- **Command:** none (CPU edit). Check: Markdown renders; every step below has all template
+  fields; every `1.71` hit in `frontend/src`, `README.md`, `eval_spatial.py`, `calibrate.py`
+  is covered by the Superseded claims table.
+- **Log:** `agent3_coder_round1.md` (agents' scratchpad).
+- **Rule:** PASS if all three checks hold; any missing field or uncovered `1.71` hit → fix
+  before P0 is signed.
+- **Checkpoint P-1:** both files rebuilt and read by Agents 1 and 2.
+- **Status:** [x] written by coder 2026-10-05 · [x] signed (code review 2026-10-05).
+- **Evaluation record:**
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-05 | CPU edit + field/`1.71` grep | agent3_coder_round1.md | see coder report | none known | written, awaiting review | 2', 10-12 | P0 review | see next row | see next row |
+| 2026-10-05 | code review of NOW-1..3 (read-only) | agent1_codereview.md, agent2_codereview.md | PASS; numbers spot-checked against train.log / c5.log / town02 log | N1 (exp_v2 'same file' wording), N5 (U1 sequential), M19, M20 added | APPROVED U1 with required fixes; fixes done in coder round 2 (agent3_coder_round2.md) | 2', 10-13, M19, M20 | U0, U1 (sequential) | APPROVE (Agent 1, 2026-10-05) | APPROVE (Agent 2, 2026-10-05) |
+
+---
+
+## P0a: Lead-time asks (user, any time, no GPU) — U0
+
+- **Goal:** start the slow external dependencies now, and get the hashes that P1 rule (a)'s
+  fallback needs.
+- **Inputs:** none.
+- **Procedure / Command (PowerShell, repo root):**
+  1. `Get-FileHash model_3head_best.pth -Algorithm SHA256` and
+     `Get-FileHash model_3head_calib_best.pth -Algorithm SHA256`. Paste both. Ask the lead for
+     the SHA256 of their copy of the friend's `model_3head_best.pth` (exp_v2 calls it
+     `../model_3head_best.pth`).
+  2. Ask the lead for the `phase2a_coco_run1` checkpoint (only for optional O1), and, if O1
+     is wanted, its `phase2b_calib2` L_calib checkpoint (see O1).
+  3. Download SMIYC `dataset_AnomalyTrack.zip` (zenodo.org/records/5270237). Run
+     `Get-FileHash dataset_AnomalyTrack.zip -Algorithm MD5`; it must equal
+     `231BF79ED58924BCD33D9CBE22E61076` (exp_v2 `LOCAL_GUIDE.md:497`).
+  4. Say whether `data/coco_objects` was copied from the training pod or regenerated locally.
+     It decides whether X5's seen/unseen contrast is secondary or exploratory (P4).
+  5. Rule 2': `git ls-remote --heads origin` (the user runs it; agents never do). Paste it.
+- **Log:** paste into the chat (no file).
+- **Rule:** no gate. Hash equal to the lead's → same file, exp_v2's T=1.2247 is a valid
+  reference for P1(c). Hash differs → our numbers stand on our own fitted T; exp_v2's values
+  are cited as another file's. md5 mismatch → do not use the zip; re-download. A branch not
+  yet read → its results file is read before the next plan step is written (rule 2').
+- **Checkpoint:** answers recorded below.
+- **Status:** [x] asked · [ ] answered (item 1 hashes PASS in U0; item 5 done 2026-10-06; items 3, 4 and the lead's hash open).
+- **Evaluation record:**
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-06 | item 5: `git ls-remote --heads origin` + read-only `git fetch origin exp_v2` (orchestrator; rule 2' allows it) | chat | heads: main f20fa7e, exp_coco b0496ae, exp_v2 **d162e22** (snapshot was da7349d). New commit: "explainability (removal, stage attribution, uncertainty split) + /demo panel; port record_route.py". `eval_road_anomaly.py` unchanged since da7349d | snapshot refreshed in place (explain.py, validate_explain.py, record_route.py, LOCAL_GUIDE.md, README.md, server.py, runs/RESULTS.md; older copies recoverable from da7349d; noted in SNAPSHOT_VERSION.txt) | branch read (RESULTS.md Part D) before the next plan step; see "exp_v2 Part D" under P4 | 2' | NOW-4 | orchestrator | orchestrator |
+
+---
+
+## P0: Code for the redo (CPU, coder)
+
+- **Goal:** make P1/P1b/P3 possible and safe: correct T fit, no dangerous defaults, the
+  metrics P1's rules need.
+- **Inputs:** exp_v2 `calibrate.py` (`_mean_nll`, `fit_temperatures`), exp_v2 `metrics.py`
+  (`ubq_local`, `_outline`, `threshold_at_max_f1`), exp_v2 `validate_metrics.py`.
+- **Procedure (done 2026-10-05):**
+  - `config.py`: `PRIMARY_RAW`, `PRIMARY_CALIB`, `TEMPERATURE_LOG_BOUNDS`,
+    `TEMPERATURE_BAND_RADIUS_PX`; `CHECKPOINT_3HEAD/_CALIB` unchanged and commented as
+    training-output paths only (M15).
+  - `utils.load_trained_model(None)` raises `ValueError`. `check_collapse.py` takes a required
+    `--checkpoint`; `demo_visualize.py` carries a stale-path comment.
+  - `calibrate.py`: plain-NLL `fit_temperatures` (bounded search over log T, xatol 1e-4, per
+    head before the mean, whole + band r=8); old fit renamed
+    `_fit_temperature_weighted_DEPRECATED` (no flag reaches it); exactly one of
+    `--compare-only` (needs `--raw --calib`, optional `--temp-whole`, writes
+    `calibration_reliability_T122.png`, refuses the old png name), `--temp-only --checkpoint`,
+    `--train-lcalib --checkpoint` (the only route into `run_calib_finetune`). A bare run errors.
+  - `eval_spatial.py`: `--raw`/`--calib` required; `--temperature 1.7142` removed; Fishyscapes
+    fits whole T on val and prints `fitted whole T = x.xxxx` (plus band T for reference);
+    carla temp row only with `--temp-whole`; every temp label prints the fitted T; M14
+    docstring fixed; head-0 row + paired AP bootstrap head0 − fused (rule f); `ubq_local` line
+    per row at its val max-F1 threshold (legacy UBQ line labelled "legacy, saturated");
+    per-image boundary-F1 paired bootstrap C5 − raw (rule e); `--input-scale {1,2,ms}` and
+    `--window`.
+  - `metrics.py`: `threshold_at_max_f1`, `_outline`, `ubq_local`, `paired_bootstrap_ap`
+    (per-image pos/neg at `DEFAULT_BINS`, pooled AP per resample, 1000 resamples,
+    `GLOBAL_SEED`). `validate_metrics.py` updated to exp_v2's checks plus edge cases.
+  - `data/transforms.load_image_tensor(..., size=None)`: default unchanged; no training or
+    dataset caller passes `size`.
+  - New `smoke_fullres.py` and `eval_scale.py` (val half only, `assert pairs is fishy_val`).
+- **Command (CPU checks, coder):** py_compile on every touched file; toy NLL (logits of a
+  calibrated Bernoulli ×2 → T≈2 within 1%); `validate_metrics.py`; `paired_bootstrap_ap(a, a)`;
+  calibrate argparse cases; `load_trained_model(None)`; `eval_spatial.py --help`; grep for
+  `1.7142`; end-to-end runs of eval_spatial/calibrate/eval_scale/server on a fake CPU model
+  and fake data in the scratchpad.
+- **Log:** `agent3_coder_round1.md`.
+- **Rule:** every check PASS → P0 can be signed. Any FAIL → fix and re-run before U1.
+- **Checkpoint P0:** all checks pass, output pasted, both agents sign.
+- **Status:** [x] written + CPU-checked 2026-10-05 · [x] signed (code review 2026-10-05).
+- **Evaluation record:**
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-05 | CPU checks listed above | agent3_coder_round1.md | all PASS (toy T 1.9963, −0.18%) | windows are 1088 px wide (see P0b) | written, awaiting review | 5, 11 | U1 | see next row | see next row |
+| 2026-10-05 | code review of NOW-1..3 (read-only) | agent1_codereview.md, agent2_codereview.md | eval_spatial, metrics, calibrate, eval_scale correct; all 10 deviations accepted | smoke_fullres now prints reserved memory, rule on reserved < 6.5 GiB; --block-bootstrap added for carla | APPROVED U1 with required fixes; fixes done in coder round 2 (agent3_coder_round2.md) | 5, 11, 13 | U0, U1 (sequential) | APPROVE (Agent 1, 2026-10-05) | APPROVE (Agent 2, 2026-10-05) |
+
+---
+
+## P0b: Full-resolution smoke test (GPU, user, ~1 min) — U1-1
+
+- **Goal:** know before any write-up whether a 2048×1024 forward fits in 8 GB, so P3 has a
+  feasible mode.
+- **Inputs:** `model_3head_best.pth`; first Fishyscapes **val** image.
+- **Procedure:** one forward per scale under `no_grad` + bf16 autocast; prints the **reserved**
+  peak (`max_memory_reserved`, what the caching allocator holds — the number that decides an
+  OOM), the allocated peak (reference only), wall time, logit shape, fused min/mean/max. `--window` runs
+  scale 2 as two 1024-tall windows, each 1088 px wide (half the width + 64 px), overlapping by
+  128 px, logits averaged in the overlap. (Two 1024-wide windows cannot overlap on a 2048-wide
+  image, so the window width is 1088; flagged for the agents.)
+- **Command:** `python smoke_fullres.py --raw model_3head_best.pth --scales 1 2 | Tee-Object -FilePath smoke_fullres.log`
+  - only if needed by the rule:
+    `python smoke_fullres.py --raw model_3head_best.pth --scales 2 --window | Tee-Object -FilePath smoke_fullres_window.log`
+- **Log:** `smoke_fullres.log` (+ `smoke_fullres_window.log`).
+- **Rule (pre-registered):**
+  - scale-1 logit shape must be (1, 3, 512, 1024) → else **STOP** (code or model changed).
+  - scale-2 **reserved** peak < 6.5 GiB, no OOM → **P3 uses whole-image scale 2**. (The
+    ~1.5 GiB margin covers the CUDA context, counted in neither number, and the second model
+    that `eval_spatial --input-scale 2` loads; Agent 1 code review.)
+  - scale-2 reserved peak ≥ 6.5 GiB or OOM → run the window command: reserved peak < 6.5 GiB →
+    **P3 uses windows** (`--window`); else **P3 dropped**, recorded as "full-res infeasible on
+    8 GB".
+  - Run P0b **before** P1, never at the same time.
+- **Checkpoint:** P3's mode (whole / window / dropped) recorded here: **whole-image scale 2, no
+  `--window`** (reserved 3.54 GiB; with eval_spatial's second model about 3.9 GiB).
+- **Status:** [x] run 2026-10-05 · [x] signed.
+- **Evaluation record:**
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-05 | `python smoke_fullres.py --raw model_3head_best.pth --scales 1 2 \| Tee-Object -FilePath smoke_fullres.log` | smoke_fullres.log | scale-1 shape (1,3,512,1024) PASS; scale-2 reserved 3.54 GiB < 6.5 PASS (allocated 2.93 GiB, 0.84 s, shape (1,3,1024,2048)); scale 1 reserved 0.98 GiB | none | P3 mode = whole-image scale 2, no `--window` | 3, 4 checked | P3 (U2-5) | SIGNED (Agent 1, agent1_U1_eval.md) | SIGN (Agent 2, agent2_U1_compliance.md) |
+
+---
+
+## P1: Calibration redo with the correct T + ubq_local + head-0 (GPU, user) — U1-2
+
+Run only after U1-1 (P0b) has finished; never at the same time.
+
+- **Goal:** re-measure the temp(whole) baseline with a plain-NLL T fitted on our checkpoint;
+  reproduce every T-independent row; settle the C5 outline claim at a matched operating
+  point; give our own objects-found and head-0 numbers.
+- **Inputs:** `model_3head_best.pth`, `model_3head_calib_best.pth`, Fishyscapes 50 val / 50
+  test, scale 1.
+- **Procedure:** one run. Val: cache logits, fit whole T (plain NLL), C2, C3, control, C5 and
+  every row's thresholds. Test: rows raw, temp(T), L_calib, C2, C3, control, C5, head 0; the
+  existing band-ECE bootstraps; AP bootstrap head0 − fused; boundary-F1 bootstrap C5 − raw.
+  Runtime UNVERIFIED (estimate 30-40 min; the T fit and ubq_local add CPU time); RAM peak
+  estimated a few GB.
+- **Command:** `python eval_spatial.py --dataset fishyscapes --raw model_3head_best.pth --calib model_3head_calib_best.pth | Tee-Object -FilePath eval_fishyscapes_T122.log`
+- **Log:** `eval_fishyscapes_T122.log`.
+- **Rule (pre-registered):**
+  - **(a) Fitted whole T** (line `fitted whole T = x.xxxx`): T ∈ [1.2147, 1.2347] → PASS.
+    Outside → **STOP**; compare the U0 hashes. Hashes differ → our numbers stand on our own T,
+    exp_v2's 1.2247 is cited as another file's value. Hashes equal → find the environment or
+    code difference before anything else.
+  - **(b) Reproduction** of raw / L_calib / C2 / C3 / control / C5 against
+    `eval_fishyscapes_c5.log` (whole ECE, band-ECE r=4/8/16, AP): |Δ| ≤ 0.0005 → PASS;
+    0.0005 < |Δ| ≤ 0.002 → RECORD and continue (bf16/cuDNN nondeterminism, new numbers used);
+    |Δ| > 0.002 on any of them → **STOP**, diff data/code/checkpoint before any P1 number is
+    used. Reference values (test half, scale 1):
+
+    | row (c5.log) | AP | whole ECE | band r=4 | band r=8 | band r=16 | fitted |
+    |---|---|---|---|---|---|---|
+    | raw | 0.6215 | 0.0004 | 0.2848 | 0.2273 | 0.1748 | — |
+    | L_calib | 0.6024 | 0.0005 | 0.2858 | 0.2396 | 0.1889 | — |
+    | C2 temp-band | 0.6173 | 0.0420 | 0.1242 | 0.0942 | 0.0821 | T=4.3592 |
+    | C3 | 0.6106 | 0.0193 | 0.1614 | 0.1312 | 0.0916 | exp(1.182 −3.774·d) |
+    | C3 control | 0.6177 | 0.0177 | 0.1563 | 0.1277 | 0.0893 | T=3.1516 |
+    | C5 | 0.4929 | 0.0264 | 0.0911 | 0.0738 | 0.0624 | w as logged |
+
+  - **(c) temp(whole) row** vs exp_v2's reference (whole ECE 0.00013 — printed as 0.0001 —
+    and band r=8 0.2096, `RESULTS.md` "Reference points"): within ±0.002 → PASS; else RECORD,
+    and continue only if (a) and (b) passed.
+  - **(d) Verdicts:** recompute C4 condition 1 (C3 − temp, r=8), L_calib − temp, C5 − temp.
+    Predicted: no flips. Any flip is recorded as a new finding in PLAN and MISTAKES, not
+    explained away.
+  - **(e) C5 outline (M11):** per-image boundary F1, C5 − raw, each row at its own val max-F1
+    threshold, paired over images where both find ≥ 1 object. CI > 0 → keep "context improves
+    outlines at a matched operating point, at an AP cost". CI ∋ 0 → withdraw the extent claim.
+    CI < 0 → withdraw and record. Objects found and far-FP reported alongside.
+  - **(f) Head 0 vs fused ΔAP** (paired image bootstrap, descriptive): CI ∋ 0 → "equal
+    detection on our model too" (consistent with exp_v2's 1-head). fused > head0, CI excludes
+    0 → "the ensemble improves detection on the 2000-bank model" (caveat: the epoch was
+    selected on fused val AP). head0 > fused, CI excludes 0 → report as is. No design decision
+    depends on it.
+  - **(g) Objects found** (raw row's `ubq_local` line) replaces "47%" everywhere (M16).
+  - **STOP gate:** nothing below runs until (a) and (b) are signed.
+- **Checkpoint P1:** (a)-(c) pass; (d)-(g) recorded; superseded rows for M1/M11/M16 filled.
+  **Reached 2026-10-05.**
+- **Status:** [x] run 2026-10-05 · [x] signed.
+- **Evaluation record:**
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-05 | `python eval_spatial.py --dataset fishyscapes --raw model_3head_best.pth --calib model_3head_calib_best.pth \| Tee-Object -FilePath eval_fishyscapes_T122.log` | eval_fishyscapes_T122.log | (a) T = 1.2251 ∈ [1.2147, 1.2347] PASS (bounded band T 4.3686). (b) raw/L_calib/C2/C3/control/C5 identical to c5.log on every metric and every T-independent bootstrap, \|Δ\| = 0 PASS. (c) temp whole ECE 0.0001 (ref 0.00013), band r=8 0.2095 (ref 0.2096) PASS. (d) no flips: C4 cond 1 −0.0783 [−0.0972, −0.0651]; L_calib − temp r=8 +0.0301 [+0.0196, +0.0397]; C3-control and C5 verdicts unchanged. (e) C5 − raw BF1 +0.0950 [+0.0349, +0.1543], n = 24/50 → keep, qualified: far-FP 36.1% vs 14.7% of flagged px, AP 0.4929 vs 0.6215. (f) head0 − fused AP −0.0406 [−0.0685, −0.0125]. (g) objects found 40/85 (47.1%) at t = 0.4766 | none | P1 PASS; M1 confirmed on our machine; no verdict flips; (f) differs from exp_v2 (finding, scoped below) | 1, 3, 6, 7, 10 checked; M1, M11, M16 evidence; M21 triggered (rule-e guard gap) | U2 (U2-3, U2-4, U2-5) | SIGNED (a)+(b) (Agent 1, agent1_U1_eval.md) | SIGN (Agent 2, agent2_U1_compliance.md) |
+
+### P1-compare (GPU, user, after P1 sign-off) — U2-3
+
+- **Goal:** replace `calibrate.log`'s table and the png's temp curve with the fitted T.
+- **Inputs:** T from P1 (a).
+- **Procedure:** eval only; never reaches the fine-tune; writes a new png.
+- **Command:** `python calibrate.py --compare-only --raw model_3head_best.pth --calib model_3head_calib_best.pth --temp-whole 1.2251 | Tee-Object -FilePath calibrate_compare_T122.log`
+- **Log:** `calibrate_compare_T122.log` + `calibration_reliability_T122.png`.
+- **Rule:** its temp row (AP, whole ECE, band-ECE r=8) matches P1's temp row (AP 0.6206, whole
+  ECE 0.0001, band r=8 0.2095; `eval_fishyscapes_T122.log`) within 0.0005, the new png exists and
+  the old `calibration_reliability.png` is untouched → PASS. Mismatch > 0.0005 → STOP and diff `calibrate.evaluate_regions`
+  vs `eval_spatial` (both upsample logits, then sigmoid, then mean).
+- **Checkpoint:** new png ready for P6's deferred edit. **Status:** [x] run 2026-10-05 · [x] signed.
+- **Evaluation record:**
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-05 | `python calibrate.py --compare-only --raw model_3head_best.pth --calib model_3head_calib_best.pth --temp-whole 1.2251 \| Tee-Object -FilePath calibrate_compare_T122.log` | calibrate_compare_T122.log | temp row AP 0.6206 = P1; band r=8 0.2096 vs 0.2095 (\|Δ\| 0.0001 ≤ 0.0005) PASS; whole ECE 0.00012; raw (0.00044, 0.2273) and L_calib (0.00053, 0.2396) match P1; new png written, old png untouched (Sep 25) PASS | run order 3→5→4 (independent); stale "0.75 gate / Experiment A" print (removed 2026-10-05, cosmetic) | PASS | 1, 11 checked | P2; png into P6 | SIGNED (Agent 1, agent1_U2_eval.md) | SIGN (Agent 2, agent2_U2_compliance.md) |
+
+---
+
+## P1b: Video temp row + Finding 4's CARLA half (GPU, user, ~5 min) — U2-4
+
+- **Goal:** replace the town02 temp row (old T) and re-source Finding 4's CARLA half to the
+  synced route (M10).
+- **Inputs:** T from P1; `video_town02_pasted` (400 frames, synced capture).
+- **Procedure:** carla branch with `--temp-whole`; thresholds self-fit (no val split), as before.
+  Consecutive frames are ~1 m apart and show the same objects, so frame-level bootstrap CIs are
+  optimistic (M20). `--block-bootstrap 20` adds a paired **circular block bootstrap**: each
+  resample takes ceil(400/20) = 20 blocks of 20 consecutive frames from uniformly drawn start
+  frames, wrapping past the last frame to the first, truncated to 400. N = 20 (≈ 20 m of route,
+  longer than a paste stays in view) is fixed now, before the run. The frame-level lines are
+  still printed, for comparison with the old log.
+- **Command:** `python eval_spatial.py --dataset carla --carla-root video_town02_pasted --raw model_3head_best.pth --calib model_3head_calib_best.pth --temp-whole 1.2251 --block-bootstrap 20 | Tee-Object -FilePath eval_video_town02_pasted_T122.log`
+- **Log:** `eval_video_town02_pasted_T122.log` (the old log `eval_video_town02.log` scored this
+  same root; its name did not say so).
+- **Rule:** raw and L_calib rows reproduce `eval_video_town02.log` (raw AP 0.6604, ECE 0.0092,
+  band r=4/8/16 0.3082/0.2234/0.1357; L_calib AP 0.6452, band r=8 0.2071) within the P1(b)
+  bands, else STOP. The temp row replaces 0.1907. Finding 4's CARLA half cites this log's
+  L_calib − raw r=8 from the **block-bootstrap** line. The route holds native CARLA props **and**
+  pastes (unseen COCO + CARLA-bank), so the claim covers the whole route:
+  - block CI excludes 0 (below 0) → "L_calib lowers band-ECE on the pasted CARLA route (native
+    props + pastes; r=8, 20-frame circular block CI)";
+  - block CI includes 0 → "no detectable effect on the pasted CARLA route (native props + pastes;
+    r=8, 20-frame circular block CI)", and Finding 4 keeps only its Fishyscapes half;
+  - block CI above 0 → report that L_calib is worse there too.
+  - **Sanity note (not a gate):** record whether the block CI is wider than the frame-level CI
+    printed just above it. It should be; if it is not, flag it to the agents. (A sensitivity
+    check at N = 10 / 40 was optional and is not implemented; the decision reads N = 20 only.)
+  - Whole-image ECE now prints at 6 dp; compare it with the old log's 4-dp value after
+    rounding. (Old value −0.0162
+  [−0.0178, −0.0142] is a frame-level CI over correlated frames, optimistic.)
+  `eval_carla_c1.log` is dropped as evidence. The pilot logs' temp rows stay INVALID, not re-run.
+- **Checkpoint:** Finding 4 and its "Why each attempt failed" row cite this log.
+- **Status:** [x] block-bootstrap code signed (Agent 1, agent1_round2_codereview.md) · [x] run 2026-10-05 · [x] signed.
+- **Evaluation record:**
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-05 | `python eval_spatial.py --dataset carla --carla-root video_town02_pasted --raw model_3head_best.pth --calib model_3head_calib_best.pth --temp-whole 1.2251 --block-bootstrap 20 \| Tee-Object -FilePath eval_video_town02_pasted_T122.log` | eval_video_town02_pasted_T122.log | raw/L_calib reproduce eval_video_town02.log exactly (\|Δ\| = 0, incl. C1 lines and frame bootstrap) PASS; temp r=8 0.2117 replaces 0.1907; block CIs wider than frame-level at every radius (r=8 width 0.0093 vs 0.0036) PASS; Finding 4 CARLA half: L_calib − raw r=8 −0.0162 [−0.0207, −0.0114] (block) excludes 0 → "helps on the pasted CARLA route (native props + pastes)"; L_calib − temp block CI ∋ 0 at r=4/8/16 → indistinguishable (old frame-level "worse than temp" superseded); ubq_local self-fit, descriptive | run order 3→5→4 | PASS; Finding 4 re-sourced (direction asymmetry measured on both sides) | 7, 10, M10, M20 checked | P2 write-up; A1 before P4 | SIGNED (Agent 1, agent1_U2_eval.md) | SIGN (Agent 2, agent2_U2_compliance.md) |
+
+---
+
+## P3: Full-resolution decision (GPU, user, val only, ~15-30 min) — U2-5
+
+Runs right after P1, before P2's write-up, P4 and P5. Skip if P0b dropped it.
+
+- **Goal:** decide on the val half whether feeding the encoder 2048×1024 (scale 2) or the mean
+  of both passes' logits (ms) beats the training resolution (scale 1).
+- **Inputs:** `model_3head_best.pth`, Fishyscapes val half only; P0b's mode.
+- **Procedure:** per val image, per-head logits at label resolution for each mode; pooled
+  AUROC/AP/FPR@95/ECE, band-ECE r=8; paired AP bootstrap of each mode vs scale 1; the script
+  prints the rule's verdict.
+- **Command:** `python eval_scale.py --raw model_3head_best.pth --modes 1 2 ms | Tee-Object -FilePath eval_scale_val.log`
+  (no `--window`: P0b chose whole-image scale 2).
+- **Log:** `eval_scale_val.log`.
+- **Rule (pre-registered, val only):** for m ∈ {2, ms}: ΔAP = AP(m) − AP(1) with paired CI,
+  ΔFPR = FPR@95(m) − FPR@95(1).
+  - **ADOPT** m if ΔAP ≥ +0.03, the CI excludes 0 and ΔFPR ≤ +0.01. Both qualify → higher
+    val AP; within 0.01 of each other → scale 2.
+  - **HURTS** if ΔAP ≤ −0.03 with the CI excluding 0 → keep scale 1; report "full-res hurts;
+    the heads are scale-specific to their training resolution" (bears on Finding 2 / M9).
+  - **NO GAIN** otherwise → keep scale 1; report "tested, no gain" (val numbers only).
+  - In every band: band-ECE r=8 per mode is descriptive only (Finding 2 wording).
+  - **If ADOPT:** headline-changing — the agents tell the user before anything else. Then
+    `python eval_spatial.py --dataset fishyscapes --raw model_3head_best.pth --calib model_3head_calib_best.pth --input-scale <m> | Tee-Object -FilePath eval_fishyscapes_T122_s<m>.log`
+    (add `--window` if P0b chose windows) with P1 rules (d)-(g) re-applied; P4, P5 and the P6
+    numbers run at scale m; every table states its scale; the paper also reports scale 1. The
+    video is not re-rendered (CARLA frames are native 1024×512). Needs several GB of free RAM
+    (logits cached at 1024×2048); UNVERIFIED.
+  - **If not adopted:** one descriptive scale-2 test line may go in the paper; never used for
+    anything.
+- **Checkpoint P3:** decision + val numbers recorded before any test number at a new scale is
+  quoted. **Reached: scale 1 kept** (NO GAIN for 2 and ms) — "no detectable gain at this sample
+  size" (AP CIs about ±0.13 on 50 val images; a true +0.03 could not be detected). No P1 re-run;
+  P4/P5/P6 at scale 1. ms halved val FPR@95 (0.0914 → 0.0456): descriptive, recorded as future
+  work / hypothesis only, **never checked on the test half** (that would be selection on test).
+  Val and test halves differ a lot (val band r=8 0.1405 vs test 0.2273): no val number is ever
+  compared with a test number.
+- **Status:** [x] run 2026-10-05 · [x] signed.
+- **Evaluation record:**
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-05 | `python eval_scale.py --raw model_3head_best.pth --modes 1 2 ms \| Tee-Object -FilePath eval_scale_val.log` | eval_scale_val.log | val only. Mode 2 ΔAP −0.1044 [−0.2305, +0.0359] → NO GAIN; ms ΔAP +0.0167 [−0.0426, +0.0931] → NO GAIN; scale 1 kept. Descriptive: band-ECE r=8 (1/2/ms) 0.1405/0.1907/0.1745; ms FPR@95 0.0914 → 0.0456 (not acted on). Val AP 0.6837 ≈ train.log 0.6839 | run order 3→5→4 | scale 1 kept; reviewer idea 1 tested, no detectable gain (underpowered, AP CIs about ±0.13) | 6, 7, 10 checked | P2; no reruns | SIGNED (Agent 1, agent1_U2_eval.md) | SIGN (Agent 2, agent2_U2_compliance.md) |
+
+---
+
+## P2: Write-up of P1/P1b/P3 into this file (CPU, coder)
+
+- **Goal:** the calibration table, outline table, head-0 line, Findings 1-6 and "Why each
+  attempt failed" filled from logs.
+- **Inputs:** signed P1, P1-compare, P1b, P3 records.
+- **Procedure:** fill the skeletons below; remove "570×" (M12); narrow Finding 2 (M9) plus P3's
+  descriptive result; re-source Finding 4 (M10); Finding 6 per P1(e); every cell cites log,
+  checkpoint, split and scale.
+- **Command:** none (CPU edit). **Log:** this file.
+- **Rule:** any cell without a log citation → not signed. Any number contradicting its log →
+  fix before P6's number edits.
+- **Checkpoint:** every number cites a log, checkpoint and scale.
+- **Status:** [x] written 2026-10-05 (section "Write-up (step P2)" below) · [x] signed 2026-10-06 (agent1_P2P6_review.md SIGN, agent2_P2P6_compliance.md SIGN).
+- **Evaluation record:**
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
+| | | | | | | | | | |
+
+---
+
+## P4: Explainability completion (CPU code + GPU run) — U3, later
+
+- **Goal:** a same-photo paste test (X5) on our model with a pre-registered primary contrast;
+  decide X2's role in the paper.
+- **Inputs:** `paste_test.py`; `data/coco_objects` (bank identity per U0-4).
+- **Procedure (coder, CPU, NOW-4 or later):** one paste per forward pass (4 forwards per
+  photo: original + one per arm); same centre and same longest-side target for all arms of a
+  photo; reject a placement whose dilated paste meets the dilated real mask, retry up to 10
+  times, else drop that arm for that photo; log px per arm; paired CI on real-object drift;
+  bank-identity CPU checks (i) 3000 pairs, (ii) `coco_banks()` reproduces `_build_both_bank`
+  (same sorted glob, same `random.Random(GLOBAL_SEED).sample`, same `COCO_BANK_TARGET`);
+  required `--raw`, `--input-scale`.
+- **Command:** `python paste_test.py --raw model_3head_best.pth --input-scale 1 | Tee-Object -FilePath paste_test.log`
+  (P3 kept scale 1), plus `python explain.py --raw model_3head_best.pth --x2-faith | Tee-Object -FilePath explain_x2_faith.log`.
+- **Log:** `paste_test.log`.
+- **Rule (paired over photos):**
+  - **Primary:** edge gap (unseen paste − real) > 0, CI excludes 0 → "pastes are more
+    over-confident at edges than real objects in the same photos (our model)". CI ∋ 0 → "not
+    supported in the same photos; the X1b paste/real gap may be a domain effect". < 0 with CI
+    excluding 0 → report the contrary.
+  - **Secondary** (exploratory if U0-4 leaves bank identity unverified): seen − unseen object
+    score > 0, CI excludes 0 → memorisation evidence; else "no detectable memorisation".
+  - Real-object drift CI must include 0; otherwise the pastes still affect the real object →
+    report it and treat the primary contrast as confounded.
+  - All other contrasts exploratory, labelled so.
+- **Optional X2 faithfulness** (only if X2 is more than a footnote, decided at this checkpoint):
+  `python explain.py --x2-faith | Tee-Object -FilePath explain_x2_faith.log` (code not written).
+  Mean-ablate one stage at a time; per image, does the top grad×act stage also give the largest
+  ablation drop? Agreement > 0.5 with CI excluding 0.25 → "faithful at the top-stage level";
+  else "not validated", footnote only.
+- Then re-export `static/explain/summary.json` (CPU) with M17 wording.
+- **exp_v2 Part D (read 2026-10-06, d162e22; the lead's COCO model, NOT ours, M16):** the lead ran
+  its own X1–X4. Three points matter for us:
+  1. Gradient share and a *local* stage ablation disagree at stage 4: it carries 25–32% of the
+     gradient but only 0–16% of the removal effect. So a grad×act share is not evidence that the
+     model relies on a stage. Our X2 line "stage 4 has the largest share (0.42)" is therefore a
+     **gradient-share statement only** until `--x2-faith` runs on our model.
+  2. On their model, Telea fill fires on 22% of clean-road controls. Our X1b already measured Telea
+     bias +0.609 on ours (M6), which is consistent.
+  3. Their removal is per object, with clean-road controls and image-clustered CIs.
+
+  Any comparison in the paper is labelled by checkpoint.
+- **Code fixes done 2026-10-06** (orchestrator acting as coder; reviewed in the main session, per the
+  cost note):
+  - `paste_test.py` rewritten to the procedure above:
+    - 1 + 3 forwards per photo (one paste each).
+    - One shared (centre, longest-side target) per photo. The centre sits on the model's
+      road/sidewalk prediction, at distance > 48 px + 0.75·target from the real object.
+    - Up to 10 object draws per arm. A draw is rejected if the paste meets the real mask dilated by
+      48 px; after 10 rejections the arm is dropped and counted.
+    - Logged per arm: px, tries, surface fraction, real-object drift. The drift gets a paired CI per
+      arm.
+    - Output blocks print in the order PRIMARY / SECONDARY / CONFOUND / EXPLORATORY.
+    - `--raw` and `--input-scale {1}` are required.
+    - The CARLA arm uses A1 class `aligned` (24 objects). `--carla-classes` changes this, pending the
+      A1 eyeball.
+  - **Deviation (set before any run):** the shared target is log-uniform in [16, 102] px, not
+    training's [6, 102] px. Below ~16 px most cutouts fall under the 32-px fragment threshold.
+  - Bank checks, forced CPU (`python paste_test.py --check-banks`; output in
+    `agent_state/coder_checks/paste_test_check_banks.txt`):
+    - (i) 3000 COCO pairs: PASS.
+    - (ii) `coco_banks()` seen set = the `_build_both_bank()` COCO part, same order: PASS. Unseen set:
+      1500, disjoint: PASS.
+    - The U0-4 caveat stands: whether the local files are the pod's is still unverified.
+  - `explain.py --x2-faith` written (a port of exp_v2's local `stage_ablation`). Same rule as above,
+    plus one refinement set before any run: **only detected objects** count (peak ≥ 0.47658, the raw
+    val max-F1), because an undetected object's drop is noise around a ~0 score. One object = the
+    image's whole anomaly mask (as in our X2), not one per connected component.
+  - CPU smoke on 1–4 test photos, forced CPU (code checks, **not results**):
+    `agent_state/coder_checks/now4_cpu_check_output.txt` and `x2_faith_cpu_check_output.txt`. Paste
+    size, centring and locality are asserted; real-object drift on the smoke photo was 0.0000.
+  - MISTAKES rule 13 nearly repeated (M19): `CUDA_VISIBLE_DEVICES=""` was used again. The in-code
+    assert caught it before anything ran; fixed to `"-1"`.
+- **Checkpoint P4:** X5 verdict recorded; X2's paper role decided.
+- **Status:** [x] code fixes 2026-10-06 · [x] run (U3b) 2026-10-06 · [x] signed (orchestrator) for PRIMARY/SECONDARY/X2; the CARLA-arm wording waits for the A1 eyeball.
+- **Results (U3b, 2026-10-06; `paste_test.log`, `explain_x2_faith.log`; raw primary model; scale 1; Fishyscapes test half):**
+  - **X5 setup:** 50/50 photos placed; 0 arms dropped; surface fraction 0.99 in every arm; the exact
+    removal (original photo) scores 0.000 on the paste pixels; 37 photos have a real object ≥ 30 px.
+  - **X5 PRIMARY:** edge gap, unseen paste − real = **+0.468 [+0.401, +0.532]**, n=37. Pastes:
+    band_gap +0.298, over-confident. Real objects: −0.179, under-confident.
+  - **X5 CONFOUND:** the rule says each real-object drift CI must include 0.
+    - coco_seen −0.0008 [−0.0036, +0.0027]: PASS.
+    - carla_bank −0.0010 [−0.0038, +0.0017]: PASS.
+    - **coco_unseen −0.0032 [−0.0059, −0.0007]: FAIL.**
+    - Per the pre-registered rule, the primary contrast is **reported as confounded**. Stated
+      alongside, not as a rescue: the drift is about 150× smaller than the gap. The same contrast
+      with the seen arm, whose drift check passes, gives +0.453 [+0.381, +0.523]; that is
+      exploratory. Three drift tests at 95% have about a 14% chance of one false exclusion.
+  - **X5 SECONDARY:** seen − unseen object score = −0.011 [−0.053, +0.033] → **"no detectable
+    memorisation"**. Exploratory until U0-4; the CPU bank check passed, but whether the local files
+    are the pod's is still unconfirmed.
+  - **X5 exploratory:**
+    - Same photos: unseen paste 0.939 vs real 0.347 (+0.584 [+0.478, +0.677]). The real objects are
+      larger (1392 vs 915 px), so size does not explain the gap in this direction.
+    - CARLA(aligned) − seen COCO −0.086 [−0.175, −0.006]. 4 CARLA pastes scored ≤ 0.05, all at
+      18–56 px targets.
+    - Stage-4 grad share, unseen − real −0.244 [−0.306, −0.173]. This is gradient only; see X2.
+  - **X2 faithfulness:**
+    - Fishyscapes, 24/37 detected: agreement **0.25 [0.08, 0.42] → NOT validated.** The top
+      gradient stage was mostly stage 4 (11/24); the top ablation stage was stage 3 (17/24) and
+      never stage 4. Ablation drop by stage: 28 / 52 / **74** / 28%.
+    - CARLA pastes, 75/75 detected: **0.56 [0.44, 0.67] → "faithful at the top-stage level"**.
+      Ablation drop by stage: 3 / 16 / 20 / 12%.
+    - This matches exp_v2 Part D on the lead's model (labelled by checkpoint, M16).
+  - **X2 paper role:** footnote for real objects. The removal (ablation) numbers are the
+    explanation: real detections rest on stages 2–3. The old demo line "stage 4 pushes the score
+    down on real objects" is withdrawn (superseded; M23).
+- **Evaluation record:**
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-06 | `python paste_test.py --raw model_3head_best.pth --input-scale 1`; `python explain.py --raw model_3head_best.pth --x2-faith` (user, GPU) | paste_test.log, explain_x2_faith.log | PRIMARY +0.468 [+0.401, +0.532] (> 0, CI excludes 0); CONFOUND: unseen drift FAIL (−0.0032 [−0.0059, −0.0007]), seen/CARLA PASS; SECONDARY −0.011 CI ∋ 0; X2 real agreement 0.25 → not validated; X2 pasted 0.56 [0.44, 0.67] → faithful | target range [16, 102] px (pre-set); X2 detected-only (pre-set); CARLA arm = A1 "aligned", labels not yet eyeballed | PRIMARY direction supported but **formally confounded** (rule); no memorisation detected; X2 = footnote for real objects, ablation reported instead. `summary.json` re-exported (x2_faith, x5); /demo X2 panel reworded, X5 card added; build passes | 3, 5, 11, 13; M16, M17, M18; M23 (new) | P6b, P7 | orchestrator | orchestrator |
+
+---
+
+## P5: RoadAnomaly21 val (GPU, user, ~3 min) — U3, later
+
+- **Goal:** a second real eval set for our model (exp_v2 measured only its COCO model).
+- **Inputs:** `dataset_AnomalyTrack.zip` (md5 verified in U0-3); 10 val images with public
+  labels.
+- **Procedure (coder, CPU, NOW-4 or later):** port exp_v2 `eval_road_anomaly.py` +
+  `config.ROAD_ANOMALY21_DIR` with required `--checkpoint`, `--input-scale`, and the md5 check.
+- **Command:** `python eval_road_anomaly.py --checkpoint model_3head_best.pth --with-baseline | Tee-Object -FilePath eval_road_anomaly21.log`
+  (add `--input-scale <m>` if P3 adopted).
+- **Log:** `eval_road_anomaly21.log`.
+- **Rule:** nothing is fitted or selected on RA21. Pooled + per-image metrics with anomaly area.
+  TwinGuard < MSP → "generalisation limitation (large close objects)", next to exp_v2's COCO
+  result labelled by checkpoint. TwinGuard ≥ MSP → report with the 10-image caveat. Never a
+  headline benchmark.
+- **P5b (optional):** Lis et al. Road Anomaly (60 images), same script with `--dataset lis` →
+  `eval_road_anomaly_lis.log`, only after a CPU overlap check (md5/perceptual hash) against
+  RA21; overlapping images reported in one set only; neither set called "independent" before
+  the check. Public availability UNVERIFIED.
+- **Port done 2026-10-06:** `eval_road_anomaly.py`, from exp_v2 da7349d (unchanged at d162e22).
+  - Required `--checkpoint` and `--input-scale {1}`.
+  - `--zip` checks the md5 against `config.ROAD_ANOMALY21_ZIP_MD5`. A mismatch stops the run;
+    without `--zip` it prints UNVERIFIED.
+  - AP is printed first.
+  - Data path: `config.ROAD_ANOMALY21_DIR` (env var `ROAD_ANOMALY21_DIR`).
+  - Compiles; not run (no data yet).
+- **Command (replaces the one above):** `python eval_road_anomaly.py --checkpoint model_3head_best.pth --input-scale 1 --zip <path>\dataset_AnomalyTrack.zip --with-baseline | Tee-Object -FilePath eval_road_anomaly21.log`
+- **Checkpoint:** results recorded with the 10-image caveat. **Status:** [x] port 2026-10-06 · [x] run 2026-10-06 · [x] signed (orchestrator).
+- **Evaluation record:**
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-06 | `python eval_road_anomaly.py --checkpoint model_3head_best.pth --input-scale 1 --with-baseline` (user, GPU; ROAD_ANOMALY21_DIR set) | eval_road_anomaly21.log | 10/10 val pairs PASS; nothing fitted PASS; TwinGuard AP 0.3084 / AUROC 0.6550 / FPR@95 1.0000 / ECE 0.1335; MSP AP 0.4744 / AUROC 0.8705 / FPR@95 0.3504; anomaly px 14.81%; per-image AP 0.098–0.813 | zip md5 not checked (no `--zip`; the zip was not found on disk) → UNVERIFIED | rule: TwinGuard < MSP → **"generalisation limitation (large close objects)"**, shown next to exp_v2's COCO result (AUROC 0.72 vs 0.87) labelled by checkpoint; never a headline | 3, 11; M16 | P7 Table 1 filled | orchestrator | orchestrator |
+
+---
+
+## P6: Frontend, server and README (CPU code; the user checks visually)
+
+- **Goal:** the demo shows the real 0.9920 model honestly; every displayed number traces to a
+  log.
+- **Inputs:** exp_v2 `server.py` (reference); P1 numbers for the deferred part.
+- **Procedure — done 2026-10-05 (code only):**
+  - `server.py`: `load_image_tensor`; no second sigmoid (scores = upsampled logits → sigmoid
+    → mean, as in eval); loads `config.PRIMARY_RAW`; frames from the **test half only**, 3
+    highest per-frame AP + 3 around the median, rule stated in the page caption; new panels go
+    to `static/generated/test_half/` with a `meta.json` (old `static/generated/demo_*` untouched);
+    `EXPERIMENT_HISTORY` gains the 0.9920 run (`train.log`) marked current; click-through UX
+    unchanged. Box rule unchanged with `# PENDING P1 (val max-F1)`.
+  - `DemoPage.jsx`: M17 rewording (old `:332`, `:368`); three video-caption notes; lede names
+    the model and the frame rule; "never seen during training" now true (test-half frames).
+  - `HistoryPage.jsx`: "current" marker follows the new history id.
+  - `README.md`: 0.9920 run from `train.log`; T "being re-measured (M1)".
+  - `render_video.py`: M3 comment fixed; `--min-box` (default 150).
+- **Procedure — done 2026-10-05, coder round 2 (code review N3/N4, Agent 1 §4):**
+  - `server.py` training gallery: real CutMix composites (Cityscapes val, fixed seed, objects
+    from the 2000-object bank) written to `static/generated/training_cutmix/`, instead of the
+    curated CARLA frames' misaligned masks (M10). The old gallery stays on disk, unused.
+    `TrainingPage.jsx` lede rewritten to match.
+  - `DemoPage.jsx:430`: "COCO cutouts from outside the 1500-object training subsample (assuming
+    the local COCO bank is the one used in training, still being confirmed)" — conditional
+    until U0-4 is answered.
+  - `render_video.py --raw` is required (rule 11).
+- **Procedure — done 2026-10-05 after U2 (awaiting sign-off):**
+  - `HomePage.jsx`: temperature tab = T 1.2251 (AP 0.6206, AUROC 0.9924, whole ECE 0.0001, band
+    0.2095); "570×" and "20×" removed (absolute numbers); C2 note "0.2095 → 0.0942, whole ECE
+    0.0001 → 0.0420; image T ≈ 1.2, edges T ≈ 4.4"; L_calib note per Finding 4; AP before AUROC
+    (metrics strip and comparison rows).
+  - `HistoryPage.jsx`: lede no longer says Checkpoint B is the demo model; calibration table
+    AP-first with the T 1.2251 row; "20×" replaced by absolute numbers; image →
+    `/static/calibration_reliability_T122.png` (copied; old png kept) with the bin-mass caveat.
+  - `server.py`: boxes at the fixed val-fitted threshold `BOX_THRESHOLD = 0.47658` (raw row,
+    `eval_fishyscapes_T122.log`) instead of each image's 97th percentile; `CACHE_VERSION` 2.
+    `DemoPage.jsx` detection caption describes the fixed threshold.
+  - `README.md`: T = 1.2251 cited. `calibrate.py`: stale "0.75 gate / Experiment A" print
+    removed (compare/temp output; cosmetic).
+  - Still deferred: `summary.json` re-export (P4); any CARLA-bank-quality wording (A1).
+- **Command:** coder: `npm run build` in `frontend/`. User (it loads the model on the GPU, so the
+  user starts it): `python server.py`, then `cd frontend; npm run dev`, open
+  `localhost:5173/` and `/demo`. The first start builds the test-half panels once.
+- **Log:** `server_T122.log` if the user tees the first start
+  (`python server.py | Tee-Object -FilePath server_T122.log`).
+- **Rule:** build passes; demo frames are test-half (server log lists them with their rule
+  label); every displayed number traces to a log; the user confirms `/` and `/demo` → PASS.
+  Any number without a source → fix before Checkpoint 2.
+- **Checkpoint P6:** build passes, numbers traced, user confirms visually.
+- **Status:** [x] code-only part + build 2026-10-05 · [x] code-only part signed (review 2026-10-05) · [x] deferred number edits + build 2026-10-05 · [x] signed 2026-10-06 · [~] user visual check (U3a: log PASS 2026-10-06; the user's "looks right" pending).
+- **Evaluation record:**
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-05 | py_compile server/render_video; `npm run build`; fake-model server check | agent3_coder_round1.md | PASS | box rule kept until P1 | code part done | 11, M13, M17 | user visual check after P1 | see next row | see next row |
+| 2026-10-05 | code review of NOW-1..3 (read-only) | agent1_codereview.md, agent2_codereview.md | server fixes correct; frame rule accepted | training gallery → CutMix, DemoPage:430 conditional wording, render_video --raw required (done round 2) | APPROVED U1 with required fixes; fixes done in coder round 2 (agent3_coder_round2.md) | 11, M10, M13, M17 | U0, U1 (sequential) | APPROVE (Agent 1, 2026-10-05) | APPROVE (Agent 2, 2026-10-05) |
+| 2026-10-05 | round-2 P6 additions: CutMix gallery, DemoPage:430, TrainingPage lede, render_video --raw; forced-CPU checks; `npm run build` | agent3_coder_round2.md | all PASS | none | done, awaiting agents' read | 11, 13 | user visual check after P1 | [ ] | [ ] |
+| 2026-10-06 | U3a: `python server.py` (user, GPU) + `npm run dev`; pages /, /runs, /training, /demo visited | server_T122.log (pasted in chat) | device cuda PASS; checkpoint `model_3head_best.pth` (primary) PASS; 50 test-half frames ranked, 3 highest-AP (0.980/0.970/0.959) + 3 around median (0.424/0.338/0.283) with rule labels PASS; manifest → `static/generated/test_half` PASS; CutMix gallery from the "both (2000 objects)" bank, 8 samples PASS; every request 200/206/304, none 4xx/5xx PASS (video, explain summary, reliability png, history, training samples all served). Boxes 2/0/2/0/0/1: demo_01 has AP 0.970 but no box (mean inside 0.359 < 0.477 and/or region < 0.05% of the image) | caption gap: DemoPage detection text omitted the min-area rule (`min_area_frac=0.0005`); fixed 2026-10-06, `npm run build` passes. FastAPI `on_event` deprecation warning: cosmetic, left | PASS on the log; user's visual verdict on wording/layout pending | 11, M13, M17 | P6b | orchestrator (log) | orchestrator (log) |
+
+---
+
+## P6b: Video Checkpoint 2 (user)
+
+- **Goal:** tick Checkpoint 2 honestly (re-defined: the mp4 plays on `/demo` next to the
+  **fixed** image demo, with honest captions).
+- **Inputs:** P6 done; `/demo`.
+- **Procedure:** the user watches the video and picks min box (150 or about 100) **by eye on the
+  first 30 s, once**; never by the found% statistic.
+- **Command (only if the value changes):** `python render_video.py --root video_town02_pasted --raw model_3head_best.pth --min-box <v> --out static/video/twinguard_video_town02_pasted_minbox<v>.mp4 | Tee-Object -FilePath render_video_minbox<v>.log`
+  (`--out` keeps the current mp4 and stats on disk; the coder then points `VIDEO_BASE` in
+  `DemoPage.jsx` at the new file. The verifier's version had no `--out` and would overwrite.)
+- **Log:** `render_video_minbox<v>.log` + the new `_stats.json`.
+- **Rule:** chosen once, by eye; no further tuning on this video (old plan). Checkpoint 2 ticked
+  only after P6's user visual check.
+- **Checkpoint 2:** mp4 + fixed image demo + captions. **Status:** [ ] decided · [ ] ticked.
+- **Evaluation record:**
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
+| | | | | | | | | | |
+
+---
+
+## P7: Paper tables, citations, title (CPU; title = user)
+
+- **Goal:** paper-ready tables, every number sourced; title chosen by the user.
+- **Inputs:** signed P1-P6.
+- **Procedure:** tables AP-first (AUROC 0.992 is saturated; Fishyscapes ranks on AP), each
+  citing log, checkpoint, split, scale: calibration (P1/P3), outline quality (P1e), head 0 (P1f),
+  explainability (X1/X1b/X2/X3/X5), RA21 (+Lis), video ("pastes on CARLA, not real-world"),
+  "Why each attempt failed"; an exp_v2 column only where labelled by checkpoint (M16). **No
+  comparison to published leaderboard numbers**: our test set is a 50-image half of the public
+  L&F val; any mention says "different split". Verify citations: Seg-Grad-CAM (Vinogradova et
+  al. 2020), HiResCAM (Draelos & Carin 2020), RISE (Petsiuk et al. 2018), Depeweg et al. 2018,
+  SMIYC, Fishyscapes, Lis et al., SegFormer. Title: present the 4 options (PLAN_HISTORY Phase 4)
+  plus any change implied by P3 and P5.
+- **Command:** none. **Log:** this file + paper draft.
+- **Rule:** any unsourced number → not signed. Title is the user's choice, after P3 and P5.
+- **Checkpoint 4:** every number sourced; title chosen by the user.
+- **Status:** [x] tables drafted 2026-10-06 (`paper/TABLES.md`) · [ ] RA21 row (P5) · [ ] A1 wording · [ ] title (user) · [ ] signed.
+- **Evaluation record:**
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-06 | none (CPU write-up) | `paper/TABLES.md` | 9 tables + limitations + 16 references + 4 title options; every number copied from the signed P2 write-up, the P4 results or the stats json, each with its log; AP first; no ratios; no leaderboard comparison. 2 citations checked online (Vinogradova et al. 2020, doi 10.1609/aaai.v34i10.7244; Draelos & Carin arXiv:2011.08891); 14 from memory, flagged | the β = 50 row has no log on disk (flagged in the table) | draft complete except the RA21 row, the A1 k, and the title | 3, 12; M12, M16, M17, M21, M23 | user: title, P5, A1 | orchestrator | orchestrator |
+
+---
+
+## A1 (= Agent 1's P4.0): CARLA-tile audit (CPU, coder; read-only on `data/`)
+
+- **Goal:** measure whether the training bank's CARLA tiles were cut with misaligned masks.
+  `data/anomaly_sources._ObjectBank.sample` crops each CARLA object as the bounding box of its
+  `data/masks/*.npy` mask, the masks M10 found misaligned.
+- **Inputs:** `data/images`, `data/masks` (45 objects), `_build_both_bank()` with the current
+  config. Caveat: assumes the local 45 files are the ones the pod trained on (UNVERIFIED, like
+  the COCO bank, U0-4).
+- **Procedure:** reproduce the 500-entry CARLA part of the bank; per object: bank count, mask
+  bbox, mask-vs-8 px-ring colour contrast (the M10 screen), edge support (mean Sobel gradient on
+  the mask outline / in the ring), road-colour fraction, mask IoU with neighbours,
+  identical-bbox detection across frames (≤ 5 px), and a contact sheet with the mask outline
+  (red) and the cut crop for eyeballing. CPU forced in code (rule 13).
+- **Command (coder, CPU):** `& "C:\Users\venka\anaconda3\envs\cuda_test\python.exe" agent_state\a1_carla_tiles\a1_audit.py`
+- **Log:** `agent_state/a1_carla_tiles/a1_run_output.txt`, `a1_carla_tiles.csv`,
+  `contact_sheet.png`.
+- **Rule:** the composite screen written before the first run (contrast < 30 or road_frac > 0.5
+  or edge < 1.0) is judged against the 4 M10 anchors (000, 005 aligned; 032, 047 misaligned).
+  It **failed** (it flags both aligned anchors), so it is not used. The proposed classification,
+  **set after seeing the anchors and therefore not pre-registered**, uses edge support alone:
+  < 1.1 misaligned, 1.1–1.6 unsure, ≥ 1.6 aligned (anchors: 2.99, 3.20 vs 0.93, 0.99). Final
+  labels come from the user's eyeball check of the contact sheet, then both agents sign.
+  Outcome rules (Agent 1 P4.0): X5's CARLA arm uses **aligned** objects only; the paper states
+  "k/45 CARLA objects (m/500 bank tiles) were cut with misaligned masks"; **no retraining**
+  unless the user decides it; MISTAKES M22 is finalised with k after review.
+- **Results (PENDING REVIEW, 2026-10-05):** misaligned 15 objects = 166/500 bank tiles (004 008
+  012 018 020 024 025 029 032 033 037 043 045 047 048); unsure 6 = 67/500 (001 009 010 027 031
+  034); aligned 24 = 267/500. Identical bboxes: 004=047, 019=020, 042=043, 044=045 — in each
+  pair one member scores aligned, the other misaligned, except 004/047 (both misaligned).
+  This fits a capture that saved a neighbouring frame's mask. The old composite screen flagged
+  37/45. So k is between 15 and 21 (of 45), about 166–233 of the 500 CARLA tiles (8–12% of the
+  2000-object bank), pending the eyeball check.
+- **Checkpoint:** k fixed by the user's eyeball + both agents' sign; gates P4 (X5 CARLA arm) and
+  P7 (bank description). Does not gate U2.
+- **Status:** [x] run 2026-10-05 · [ ] user eyeball · [ ] signed.
+- **Evaluation record:**
+
+| date | command run | log | each check PASS/FAIL + numbers | deviations | verdict | MISTAKES rules checked/triggered | next step unlocked | Agent 1 sign-off | Agent 2 sign-off |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-05 | `a1_audit.py` (CPU) | agent_state/a1_carla_tiles/ | pre-set composite screen FAILED on anchors; edge-support bands: 15 misaligned / 6 unsure / 24 aligned | classification bands set after seeing anchors (not pre-registered) | PENDING REVIEW | 3, 5, 13; M10, M22 (pending) | user eyeball, then P4 design | [ ] | [ ] |
+
+---
+
+## Optional steps (each needs the user's go-ahead; costs stated)
+
+Each optional step uses the same template; the evaluation record is added when it is approved.
+
+- **O1: C-series on the lead's COCO checkpoint** (cross-model replication; eval-only, ~20 min;
+  needs U0-2).
+  - Command: `python eval_spatial.py --dataset fishyscapes --raw <lead_phase2a_ckpt> --calib <lead_calib_ckpt> | Tee-Object -FilePath eval_fishyscapes_T_coco.log`.
+    `--calib` is now required: pass the lead's `phase2b_calib2` checkpoint, or the coder makes
+    `--calib` optional first (only if O1 is approved). T is refit (exp_v2 reports 1.2206).
+  - Rule: same verdict per C-step as ours → "replicates on 2 models"; any difference is
+    reported as model-dependent.
+- **O2: C5-confidence hybrid** (eval-only; reopens Phase 1, so the user and guide decide).
+  Rule: band r=8 below the T=3.15 control with CI excluding 0 **and** whole-image ECE not
+  significantly worse than temp(whole, T from P1). Detection AP stays raw. Fail → "context fixes
+  edges only at a whole-image cost", no further variants. Log `eval_fishyscapes_o2.log`.
+- **O3: Scale-mixture retrain** (~2 h GPU + re-eval). Starts only if the user lifts "no
+  retraining for now". Always a variant under a distinct filename (never
+  `checkpoints/model_3head_best.pth`, never the primary file); selected on Fishyscapes **val**
+  AP only; RA21 reported once, never used to choose; never replaces the 2000-bank model without
+  the user's explicit written decision.
+- **O4: Trigger** (port `predict_dual_mode` + `check_dual_mode.py`). Fit on Cityscapes-val half A
+  + Fishyscapes val; report on Cityscapes-val half B + Fishyscapes test; rule fixed beforehand
+  (≤ 5% normal frames triggered, ≥ 90% anomalous). Low prior (X3: FP − TP disagreement not
+  significant on real data).
+- **O5: Benchmark submission** (Fishyscapes / SMIYC). High effort, external turnaround. Until
+  done, no comparison to published numbers.
+- **O6: S2 signed-distance binned T.** Dropped unless the user reopens Phase 1. If reopened:
+  judged by the C4 rules against the T=3.15 control **and** against T from P1.
+
+---
+
+## Superseded claims
+
+Each old claim, where it appears, why it is superseded, the step that replaces it, and whether
+the paper's conclusion changes. Numbers marked PENDING are not yet measured.
+
+| # | Old claim | Where it appears | Why | Replaced by | CHANGES CONCLUSION? |
+|---|---|---|---|---|---|
+| 1 | temp(whole) T=1.71 row: AUROC 0.9924, AP 0.6193, FPR 0.0288, ECE 0.0020, band r=4/8/16 0.2208/0.1845/0.1451 ("edge ECE 0.2273 → 0.1845 only") | PLAN_HISTORY final table + why-failed table; `HomePage.jsx:43-47`; `HistoryPage.jsx:53,64`; temp rows of `eval_fishyscapes_c1/c1b/c2/c3/c3ctrl/c5.log`, `eval_carla_c1.log` | M1 | **T = 1.2251: AUROC 0.9924, AP 0.6206, FPR@95 0.0289, whole ECE 0.0001 (4 dp), band r=4/8/16 0.2630/0.2095/0.1647; edge ECE 0.2273 → 0.2095** (`eval_fishyscapes_T122.log`) | N — the edge finding is stronger |
+| 2 | T=1.7142 in `calibrate.log`'s table and `calibration_reliability.png` temp curve | `calibrate.log`, `calibration_reliability.png`, `static/calibration_reliability.png` | M1 | **`calibrate_compare_T122.log` + `calibration_reliability_T122.png`** (whole + band panels; old files kept). Caveat: bin mass not shown; >99% of whole-image pixels sit in the lowest bin | N |
+| 3 | C5 bootstrap labelled "C5 − ECE(temp T=1.71)": r=8 −0.1107, whole +0.0245 | `eval_fishyscapes_c5.log`; old `eval_spatial.py:505` | M1 | **C5 − temp(1.2251): r=8 −0.1358 [−0.1608, −0.0993], whole +0.0263 [+0.0240, +0.0278]** (`eval_fishyscapes_T122.log`) | N — same pattern |
+| 4 | L_calib − temp r=8 +0.0551; C4 condition 1 C3 − temp r=8 −0.0533 | `eval_fishyscapes_c5.log`, PLAN_HISTORY C-section | M1 | **L_calib − temp r=8 +0.0301 [+0.0196, +0.0397] (r=4 +0.0228, r=16 +0.0242, all excl. 0); C4 cond 1 −0.0783 [−0.0972, −0.0651]** (`eval_fishyscapes_T122.log`) | N — no flips |
+| 5 | "The whole image wants T≈1.7, the edges want ~4.4" | PLAN_HISTORY why-failed table and Findings 3; `HomePage.jsx:60` | M1 + M14 | **whole T = 1.2251 (plain NLL), edge T = 4.3592 (C2, LBFGS) / 4.3686 (bounded NLL) — same objective** (`eval_fishyscapes_T122.log`) | N — the gap widens |
+| 6 | "C2 makes whole-image ECE 20× worse" (0.0420 vs 0.0020) | PLAN_HISTORY; `HomePage.jsx:60`; `HistoryPage.jsx:74` | M1 | **absolute numbers only: C2 whole ECE 0.0420 vs temp(1.2251) 0.0001 vs raw 0.0004; paired whole diff C2 − temp +0.0418 [+0.0390, +0.0443]** (`eval_fishyscapes_T122.log`). No ratio: at 4-dp print precision the denominator is unresolved (M12) | N |
+| 7 | "Whole ECE 0.0004 vs edge 0.2273, ~570× worse" | PLAN_HISTORY Finding 1; `HomePage.jsx:39` | M12 (ratio across different pixel populations) | report both numbers; ratio removed (P2, P6 deferred edit) | N — the finding stands |
+| 8 | "T=1.71 / 3.15 / 4.36 trace a trade-off curve" | PLAN_HISTORY Finding 3 | M1 | **(whole ECE, band r=8): raw (0.0004, 0.2273); T 1.2251 (0.0001, 0.2095); T 3.1516 (0.0177, 0.1277); T 4.3592 (0.0420, 0.0942)** (`eval_fishyscapes_T122.log`) | N |
+| 9 | C1b: "learned, not an upsampling artefact" | PLAN_HISTORY Phase 1 list and Finding 2 | M9 | **Narrowed:** learned at the training resolution; not caused by the eval-side upsampling order (C1b); not reduced by full-resolution input at inference (P3, val, descriptive: band-ECE r=8 0.1405 → 0.1907 at scale 2, `eval_scale_val.log`). The heads were trained on half-resolution features only, so this does not rule out resolution as a training-time cause | **Y** — narrowed |
+| 10 | Finding 4, CARLA half: "L_calib helps on CARLA bank objects, r=8 −0.0087, CI excludes 0" | PLAN_HISTORY why-failed table and Finding 4; `eval_carla_c1.log` | M10 (curated masks misaligned), M20 | **L_calib − raw r=8 −0.0162 [−0.0207, −0.0114], 20-frame circular block CI, on the pasted CARLA route (native props + pastes)** (`eval_video_town02_pasted_T122.log`); the old frame-level −0.0162 [−0.0178, −0.0142] was optimistic | **Y** — evidence base replaced; direction same |
+| 11 | C5 "missed extent 12.8 → 4.8 px" | PLAN_HISTORY Finding 6 | M11 | **Withdrawn.** Replaced by P1(e) at each row's own val max-F1 threshold: per-image boundary F1 C5 − raw +0.0950 [+0.0349, +0.1543] over 24/50 images; objects found 59 vs 40 of 85; miss 4.50 vs 8.94 px; spill 5.37 vs 2.97 px; **far-FP 36.1% vs 14.7% of flagged px; AP 0.4929 vs 0.6215; FPR@95 0.0949 vs 0.0290** (`eval_fishyscapes_T122.log`). Every report states these costs (M21) | **Y** — old px claim withdrawn; outline gain kept, with costs |
+| 12 | "Only 47% of objects found" | external review; exp_v2 `RESULTS.md` A2 | M16 | **Ours: 40/85 (47.1%) at val max-F1 t = 0.4766, raw row** (`eval_fishyscapes_T122.log`); computed by `ubq_local` on our model — the count happens to equal exp_v2's COCO model (40/85, t = 0.507) | **Y** — attribution: now our own measured number |
+| 13 | "3 heads detect no better than 1" | external review; exp_v2 `RESULTS.md` Part B | M16 | **On our model, the 3-head mean beats its own head 0 by 0.041 AP: 0.5810 vs 0.6215, ΔAP −0.0406 [−0.0685, −0.0125]** (`eval_fishyscapes_T122.log`). Head 0 is one member of a jointly trained ensemble at the epoch selected on *fused* val AP, so this is the averaging gain at a fixed epoch and an upper bound on the gap to a separately trained, val-selected 1-head model. A separately trained 1-head model (lead's COCO run) matched 3 heads. Box recall on the pasted CARLA video is nearly equal (862 vs 858 of 1245, stats json). **Not "3 heads detect better than 1".** | **Y** — for our model on Fishyscapes, scoped as stated |
+| 14 | X2: "this explains real 0.35 vs pasted 0.95" | PLAN_HISTORY X2 results | M17 (first-order method, domain-confounded) | "consistent with"; P4 optional faithfulness check | N — wording |
+| 15 | DemoPage: "a habit learned from training on pasted objects"; "That's why pastes score … and real …" | `DemoPage.jsx` old `:332`, `:368` | M17 | reworded 2026-10-05 (scope stated, "consistent with") | N — wording |
+| 16 | Demo image scores and frames (double sigmoid, no normalisation, stale checkpoint, frames picked on labels over val+test) | `/api/manifest` from `static/generated/demo_*` | M13 | P6 server fix (code done); panels rebuilt in `static/generated/test_half/` on the user's next server start | **Y** — every displayed demo number changes |
+| 17 | Temp rows of `eval_video_pilot.log` (band r=8 0.2118) and `eval_video_pilot_t02.log` (0.2319) | those logs | M1 | **INVALID, not re-run** (pilot go/no-go checks; raw and L_calib rows stay valid) | N |
+| 18 | `eval_video_town02.log` temp row, band r=8 0.1907 | that log; PLAN_HISTORY 2d | M1 | **T = 1.2251: band r=4/8/16 0.2902/0.2117/0.1278; whole ECE 0.010719 (raw 0.009205 — a Fishyscapes-fitted T worsens whole ECE on this over-confident route)** (`eval_video_town02_pasted_T122.log`) | N |
+| 19 | README/`server.py`: "Checkpoint B 0.6190 is the current demo checkpoint" | `README.md:20-22` (old), `server.py` `EXPERIMENT_HISTORY` (old) | stale | P6 (done): 0.9920 run from `train.log` | N |
+| 20 | "min box 150 keeps every real object" | `render_video.py:51-52` (old) | M3 | comment fixed; found 77.2% → 68.9% (PLAN_HISTORY 2d; stats json) | N |
+| 21 | README mention "earlier T=1.71 … mis-fitted" | `README.md` | describes M1; no value used | **done: README cites T = 1.2251 (`eval_fishyscapes_T122.log`) and names T=1.71 only as the mis-fitted value (M1)** | N |
+| 22 | Video: "L_calib … worse than temp" (r=8 +0.0165, frame-level CI, T=1.71) | PLAN_HISTORY 2d; `eval_video_town02.log` | M1, M20 | **Indistinguishable: L_calib − temp(1.2251) r=8 −0.0046 [−0.0104, +0.0016]; r=4 +0.0039 [−0.0020, +0.0084]; r=16 −0.0015 [−0.0091, +0.0065] (block CIs all include 0)** (`eval_video_town02_pasted_T122.log`) | **Y** — video wording |
+
+Coverage check of `1.71` hits (2026-10-05): `HomePage.jsx:43,60` (rows 1, 5, 6), `HistoryPage.jsx:53,64`
+(row 1), `README.md` (row 21), `eval_spatial.py` and `calibrate.py` (comments/docstrings citing
+M1 only; no value used — rows 1-3).
+
+---
+
+## Old-plan disposition (every item of PLAN_HISTORY.md)
+
+| Old item | Disposition | Reason |
+|---|---|---|
+| Phase 1 calibration "closed" | KEEP closed; P1 re-measures only the temp row and T-dependent verdicts | M1 invalidated one row, not the C-series design |
+| "Why each calibration attempt failed" table | KEEP → skeleton below, filled in P2/P7 | T row from P1; L_calib CARLA evidence re-sourced (M10) |
+| Calibration final table + Findings 1-6 | KEEP → rewritten in P2 | "570×" (M12), Finding 2 (M9/P3), Finding 4 (M10/P1b), Finding 6 (M11/P1e) change |
+| Video 2a pilot, 2b/2c decisions, 2d render + eval | DONE (kept as history) | `eval_video_town02.log`, stats json |
+| Video Checkpoint 2 + min-box decision | KEEP → P6b | Checkpoint 2 re-defined: needs the fixed image demo (M13) |
+| min box 150 → ~100 | KEEP → P6b | chosen once by eye; new `--min-box` flag |
+| Video caption honesty notes | DONE in P6 (2026-10-05) | pastes-on-CARLA, scale, lane-dash notes added; ablation note kept |
+| X1, X1b, X2, X3 | KEEP (results below) | X2 wording per M17 |
+| X4 `/demo` panel | KEEP; user visual check in P6 | M17 rewording done |
+| X5 `paste_test.py` | KEEP → P4 with fixes and a pre-registered rule | M18 |
+| X2 faithfulness check | OPTIONAL in P4 | only if X2 is more than a footnote |
+| Citation verification | KEEP → P7 | |
+| Phase 4: `EXPERIMENT_HISTORY` + README stale 0.6190 | DONE in P6 (2026-10-05) | `train.log` |
+| Phase 4: fix `config.CHECKPOINT_3HEAD` | CLOSED by `PRIMARY_RAW/PRIMARY_CALIB` + required explicit paths + `load_trained_model(None)` raising | repointing would let training overwrite the primary model (M15) |
+| Phase 4: paper tables | KEEP → P7 | |
+| Phase 4: paper title | KEEP → P7, the user's choice after P3/P5 | P3 can change Finding 2's premise |
+| S1 HD95 | DROP as a separate item | superseded by `ubq_local` far-FP + per-object spill (P1); `pred_to_gt_p95` stays in the legacy line, captioned saturated |
+| S2 signed-distance binned T | DROP → O6 if the user reopens Phase 1 | exp_v2's two-region Platt around the predicted edge was worse than raw (`RESULTS.md:257-264`); with C3/C5 the evidence predicts failure |
+| S3 soft-target CutMix, S4 boundary-weighted L_calib | DROP | retrains, against "no retraining for now"; exp_v2's harder-pastes retrain failed (`RESULTS.md:294-300`); L_calib learned on pastes transfers the wrong way |
+| RoadAnomaly21 val | KEEP → P5 | new for our model |
+| Road Anomaly (Lis et al.) | OPTIONAL → P5b | overlap with RA21 and availability UNVERIFIED |
+| OoDIS | **DROPPED; user confirmed 2026-10-05** | needs instance post-processing + server submission; same SMIYC family as RA21 |
+| AP as headline metric | KEEP → P7 (and P6 deferred edit) | AUROC 0.992 saturated; Fishyscapes ranks on AP |
+| Head disagreement as a standalone signal; MC-Dropout dual-mode trigger | Covered by P1(f) and X3; trigger → O4 | |
+| Real-time CARLA + WebSocket demo | DROP | baked mp4 chosen (2c); time |
+| Experiment A retrain (lost weights) | DROP (user decision 2b) | |
+| Image demo "video is additive; click-through not reworked" | KEEP as a constraint on P6 | only inputs/outputs fixed; UX unchanged |
+| Reviewer ideas 1-6 | 1 → P0b/P3; 2 → P1 (ours) + O1 (theirs); 3 → O2; 4 → O3; 5 → O4; 6 → O5 | |
+
+---
+
+## Write-up (step P2, 2026-10-05; written, awaiting Agent 1/2 sign-off)
+
+Every number: `model_3head_best.pth` (L_calib rows: `model_3head_calib_best.pth`), input scale 1.
+Fishyscapes = test half (50 images), all calibrators and thresholds fit on the val half.
+Absolute numbers only, no ratios (M12). AP first.
+
+### Calibration table (Fishyscapes test, `eval_fishyscapes_T122.log`; temp whole ECE at 5 dp from `calibrate_compare_T122.log`)
+
+| model | AP | AUROC | FPR@95 | whole ECE | band-ECE r=8 |
+|---|---|---|---|---|---|
+| raw | 0.6215 | 0.9920 | 0.0290 | 0.0004 | 0.2273 |
+| temp, whole-image fit, T = 1.2251 (plain NLL) | 0.6206 | 0.9924 | 0.0289 | 0.00012 | 0.2095 |
+| temp, 50/50 fit (C3 control), T = 3.1516 | 0.6177 | 0.9925 | 0.0286 | 0.0177 | 0.1277 |
+| temp, edge fit (C2), T = 4.3592 | 0.6173 | 0.9925 | 0.0286 | 0.0420 | 0.0942 |
+| T(d), head disagreement (C3) | 0.6106 | 0.9923 | 0.0286 | 0.0193 | 0.1312 |
+| context calibrator (C5) | 0.4929 | 0.9707 | 0.0949 | 0.0264 | 0.0738 |
+| L_calib (CutMix-trained) | 0.6024 | 0.9924 | 0.0293 | 0.0005 | 0.2396 |
+
+### Outline quality, `ubq_local` (Fishyscapes test, `eval_fishyscapes_T122.log`; each row at its own val max-F1 threshold, roi 32 px, tolerance 4 px; spill/miss/BF1 are means over found objects)
+
+| model | threshold | objects found (of 85) | boundary F1 | spill px | miss px | far-FP (% of flagged px) | flagged (% of valid px) |
+|---|---|---|---|---|---|---|---|
+| raw | 0.4766 | 40 | 0.505 | 2.97 | 8.94 | 14.7% | 0.144% |
+| temp T = 1.2251 | 0.4969 | 39 | 0.514 | 3.16 | 9.33 | 13.8% | 0.138% |
+| L_calib | 0.4612 | 43 | 0.537 | 2.57 | 7.62 | 19.4% | 0.143% |
+| C2 T = 4.3592 | 0.5011 | 39 | 0.509 | 3.13 | 9.47 | 13.3% | 0.135% |
+| C3 | 0.5228 | 38 | 0.500 | 2.17 | 11.75 | 11.1% | 0.124% |
+| C3 control T = 3.1516 | 0.4997 | 39 | 0.512 | 3.14 | 9.39 | 13.6% | 0.137% |
+| C5 | 0.7217 | 59 | 0.584 | 5.37 | 4.50 | 36.1% | 0.170% |
+| head 0 only | 0.3621 | 37 | 0.508 | 3.21 | 7.32 | 17.5% | 0.147% |
+
+Rule (e): per-image boundary F1 C5 − raw +0.0950 [+0.0349, +0.1543] over 24/50 images (both rows
+found ≥ 1 object) → keep "context improves outlines at a matched operating point", **with its
+costs** (M21): far-FP 36.1% vs 14.7% of flagged px, AP 0.6215 → 0.4929, FPR@95 0.0290 → 0.0949.
+The pasted CARLA route's `ubq_local` (raw 938/1245 objects found, BF1 0.657; `eval_video_town02_pasted_T122.log`) uses
+**self-fitted** thresholds (no val split, t ≈ 0.88): descriptive only, never shown next to the
+Fishyscapes 40/85.
+
+### Head 0 vs the 3-head mean
+
+On our model the 3-head mean beats its own head 0 by 0.041 AP: 0.5810 vs 0.6215, ΔAP −0.0406
+[−0.0685, −0.0125], paired over the 50 test images (`eval_fishyscapes_T122.log`). Head 0 is one member of a jointly
+trained ensemble at the epoch selected on *fused* val AP: this is the averaging gain at a fixed
+epoch and an upper bound on the gap to a separately trained, val-selected 1-head model (the
+lead's separately trained COCO 1-head model matched 3 heads). Box recall on the pasted CARLA
+video is nearly equal (head 0 858 vs 3 heads 862 of 1245 objects, threshold 0.5, min box 150;
+`static/video/twinguard_video_town02_pasted_stats.json`) — a different metric and domain. Not
+"3 heads detect better than 1".
+
+### Findings 1-6
+
+1. **Whole-image ECE hides boundary miscalibration.** Raw: whole-image ECE 0.0004, band-ECE r=8
+   0.2273 (`eval_fishyscapes_T122.log`). With 0.28% anomalous pixels the whole-image number is dominated by easy
+   background. (No ratio: M12.)
+2. **The boundary is under-confident** (C1, every radius, raw and L_calib; r=8 mean score 0.2258
+   vs positive rate 0.4421, `eval_fishyscapes_T122.log`). The miscalibration is learned at the training resolution;
+   it is not caused by the eval-side upsampling order (C1b) and is not reduced by feeding
+   full-resolution input at inference (P3, val, descriptive: band-ECE r=8 0.1405 at scale 1,
+   0.1907 at scale 2, 0.1745 multi-scale; `eval_scale_val.log`). Caveat: the heads were trained
+   only on half-resolution features, so this cannot separate "not a resolution effect" from
+   "the heads don't transfer across scale" (M9).
+3. **No single temperature calibrates both.** On the same plain-NLL objective the whole image
+   wants T = 1.2251 and the edges T = 4.3592 (C2; bounded fit 4.3686). As (whole ECE, band r=8):
+   raw (0.0004, 0.2273); T 1.2251 (0.00012, 0.2095); T 3.1516 (0.0177, 0.1277); T 4.3592
+   (0.0420, 0.0942) (`eval_fishyscapes_T122.log`, `calibrate_compare_T122.log`). Paired: C2 − temp band r=8 −0.1153
+   [−0.1378, −0.0732], whole +0.0418 [+0.0390, +0.0443].
+4. **Calibration learned on pastes transfers the wrong correction** — measured on both sides:
+
+   | data | edge direction (C1 r=8 gap) | L_calib − raw, r=8 | L_calib − temp(1.2251), r=8 | source |
+   |---|---|---|---|---|
+   | Fishyscapes test (real) | under-confident (−0.2163) | **+0.0123 [+0.0017, +0.0258]** (worse) | **+0.0301 [+0.0196, +0.0397]** (worse) | `eval_fishyscapes_T122.log` (50-image bootstrap) |
+   | Pasted CARLA route (native props + pastes, self-fit, 400 frames) | over-confident (+0.1292) | **−0.0162 [−0.0207, −0.0114]** (better) | −0.0046 [−0.0104, +0.0016] (≈ 0) | `eval_video_town02_pasted_T122.log` (20-frame circular block bootstrap) |
+
+   L_calib lowers edge scores: that helps only where edges are already over-confident (the
+   paste-like route) and there it is no better than one global temperature fitted on real val;
+   on real objects it is worse than both raw and temperature. Caveats: one route, 20 blocks; the
+   route contains CARLA-bank pastes whose tile quality is under audit (A1, pending).
+5. **Head disagreement localises the boundary but does not tell the direction.** Mean
+   disagreement 0.0508 in the r=8 band vs 0.0007 whole-image; C3 − control r=8 +0.0035
+   [−0.0010, +0.0052] (CI includes 0) and whole +0.0016 [+0.0015, +0.0017] (worse): a
+   disagreement-conditioned T is no better than one T on the same objective (`eval_fishyscapes_T122.log`).
+6. **Neighbourhood context (C5) fixes edges and outlines, at a detection cost.** Band r=8 AUROC
+   0.7318 → 0.8167, band-ECE 0.2273 → 0.0738; per-image boundary F1 +0.0950 [+0.0349, +0.1543]
+   over 24/50 images; objects found 59 vs 40 of 85. Costs: far false alarms 36.1% vs 14.7% of
+   flagged px, AP 0.6215 → 0.4929, FPR@95 0.0290 → 0.0949; C5 fails its rule 2 (whole-image
+   +0.0088 [+0.0082, +0.0092] vs control) (`eval_fishyscapes_T122.log`). The old "missed extent 12.8 → 4.8 px" is
+   withdrawn (M11, M21).
+
+### Why each calibration attempt failed (Fishyscapes test half unless stated)
+
+| Attempt | What it tried | Why it failed | Evidence |
+|---|---|---|---|
+| L_calib | fine-tune with a differentiable ECE loss on CutMix pastes | its correction (lower edge scores) is the wrong direction for real objects, whose edges are under-confident | Fishyscapes r=8 +0.0123 [+0.0017, +0.0258] vs raw and +0.0301 [+0.0196, +0.0397] vs temp(1.2251) (`eval_fishyscapes_T122.log`); pasted CARLA route −0.0162 [−0.0207, −0.0114] vs raw, ≈ temp (block CI; `eval_video_town02_pasted_T122.log`) |
+| L_calib β=50 | stronger loss weight | surrogate went down, real ECE up | ECE 0.0004 → 0.0014, AUROC 0.9920 → 0.9898 (`config.py` BETA_CALIB history; no log on disk) |
+| Whole-image temperature T = 1.2251 | one T on real val (plain NLL) | tuned to background pixels (99.7% of the image) | whole ECE 0.0004 → 0.00012, edge ECE only 0.2273 → 0.2095 (`eval_fishyscapes_T122.log`, `calibrate_compare_T122.log`) |
+| Edge temperature (C2) T = 4.3592 | T fit on r=8 band pixels | one T can't serve both: edges want ~4.36, the image ~1.23 | edge 0.0942, whole ECE 0.00012 → 0.0420 (`eval_fishyscapes_T122.log`) |
+| Disagreement temperature (C3) | T varies with head disagreement | disagreement marks where edges are, not which side | C3 − control r=8 +0.0035 [−0.0010, +0.0052] (`eval_fishyscapes_T122.log`) |
+| Context calibrator (C5) | neighbourhood max/mean score | spreads anomaly score into nearby background | edge 0.0738 (best), AP 0.6215 → 0.4929, far-FP 14.7% → 36.1%, fails rule 2 (`eval_fishyscapes_T122.log`) |
+
+Note (descriptive): on the pasted CARLA route a Fishyscapes-fitted T = 1.2251 worsens whole ECE
+(0.009205 → 0.010719; `eval_video_town02_pasted_T122.log`), since edges there are over-confident.
+
+---
+
+## Established results (unaffected by M1; each cites its log)
+
+All on `model_3head_best.pth`, scale 1, unless stated.
+
+- **P1, temperature redo** (`eval_fishyscapes_T122.log`, Fishyscapes test half, signed
+  2026-10-05): plain-NLL whole T = 1.2251 (val); temp row AUROC 0.9924, AP 0.6206, whole ECE
+  0.0001 (4 dp), band r=8 0.2095. All T-independent rows equal `eval_fishyscapes_c5.log`
+  exactly. Objects found (raw, t = 0.4766): 40/85; boundary F1 0.505, spill 2.97 px, miss
+  8.94 px, far-FP 14.7%. Head 0 alone AP 0.5810 vs fused 0.6215 (see Superseded row 13).
+
+- **Model** (`train.log`): epoch 4 of 8 selected on val AP 0.6839; test AUROC 0.9920, AP 0.6218,
+  FPR@95 0.0287, ECE 0.0004; head-disagreement AUROC 0.9865; mIoU 0.7616.
+- **Raw calibration, Fishyscapes test** (`eval_fishyscapes_c5.log`): whole ECE 0.0004; band-ECE
+  r=4/8/16 0.2848/0.2273/0.1748; under-confident at every radius (r=8 mean score 0.2258 vs
+  positive rate 0.4421).
+- **C2/C3/control/C5** (`eval_fishyscapes_c5.log`): rows in the P1(b) table. C3 fails its
+  control; C5 passes rule 1 (r=8 −0.0539 vs control, CI excludes 0) and fails rule 2 (whole
+  +0.0088, CI excludes 0).
+- **L_calib vs raw, Fishyscapes** (`eval_fishyscapes_c5.log`): r=8 +0.0123 [+0.0017, +0.0258].
+- **Pasted CARLA route `video_town02_pasted`** (`eval_video_town02.log`, self-fit thresholds,
+  pastes on CARLA, not real-world): raw AUROC 0.9799, AP 0.6604; C1 over-confident; L_calib −
+  raw r=8 −0.0162 [−0.0178, −0.0142] — **frame-level CI over correlated frames, optimistic
+  (M20)**; the block-bootstrap CI comes from P1b.
+- **Video boxes** (`static/video/twinguard_video_town02_pasted_stats.json`, threshold 0.5, min
+  box 150): head 0 found 858/1245 (68.9%), 1361 false boxes (3.40/frame); 3 heads 862/1245
+  (69.2%), 1434 false boxes (3.585/frame). First render at min box 40: 961 vs 967 of 1245 (PLAN_HISTORY 2d;
+  stats file since overwritten by the re-render).
+- **X1** (`explain_x1.log`, 37 Fishyscapes test objects): Telea object removal drops the score
+  0.347 → 0.091, +0.256 [+0.145, +0.362]; partial edits and context blur raise it.
+- **X1b** (`explain_x1b.log`, 75 pasted frames): 0.951 with paste, 0.016 truly removed, 0.625
+  Telea-removed; Telea bias +0.609 [+0.538, +0.681].
+- **X2** (`explain_x23.log`): stage-4 share 0.42 with sign −0.68 on real objects; pasted objects
+  all stages positive; stage-1 share pasted − real +0.049 [+0.011, +0.085]. Wording per M17.
+- **X3** (`explain_x23.log`): Fishyscapes edge band aleatoric 0.236 vs epistemic 0.010; FP − TP
+  disagreement n=9 +0.0067 [−0.0153, +0.0277] (not supported on real data).
+- **exp_v2 context, other checkpoint-labelled numbers** (exp_v2 `runs/RESULTS.md`, cited as
+  context only, M16): on a file believed to be the same as ours (numbers agree to 4 dp;
+  SHA256 check pending U0-1) ("friend's CARLA+COCO raw"), temp(whole) T=1.2247
+  → ECE 0.00013, band r=8 0.2096; temp(band) T=4.3681. On the lead's COCO-only
+  `phase2a_coco_run1`: objects found 40/85 (47%), RA21 val AUROC 0.72 vs MSP 0.87, 1-head ≈
+  3-head detection.

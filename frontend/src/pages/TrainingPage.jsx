@@ -22,13 +22,13 @@ export default function TrainingPage() {
     <div className="content">
       <div className="page-head">
         <div className="stamp">EXHIBIT B</div>
-        <h1 className="headline">Training data — synthetic CARLA anomalies</h1>
+        <h1 className="headline">Training data — CutMix composites</h1>
         <p className="lede">
-          No live CARLA connection and no recorded video feed — these are 8 of the 50 individual static frames
-          actually used to train the OOD heads (<span className="mono">generate_anomalies.py</span>), each a
-          different random object spawned at a different simulated moment, not a continuous recording of one scene.
-          The amber highlight is the real ground-truth mask pasted via CutMix — exactly what the model was told
-          counts as anomalous in that frame.
+          8 composites made by the actual training pipeline: Cityscapes frames (validation split, fixed seed) with
+          objects from the 2000-object bank — tiles cut from 45 CARLA frames plus COCO cutouts — pasted on road or
+          sidewalk at realistic sizes. The highlight is the mask the heads were told counts as anomalous. The CARLA
+          tiles are cut with those frames' own masks, and at least two of those masks are misaligned, so some CARLA
+          pastes may not show the intended object.
         </p>
       </div>
 

@@ -1,7 +1,10 @@
 import { Link } from 'react-router-dom'
 import { useEffect, useRef, useState } from 'react'
 
+// train.log, selected epoch 4, Fishyscapes test half. AP first: AUROC is
+// saturated near 0.99, and Fishyscapes ranks on AP.
 const METRICS = [
+  { k: 'TEST AP', v: 0.6218, decimals: 4 },
   { k: 'TEST AUROC', v: 0.9920, decimals: 4 },
   { k: 'FPR@95', v: 0.0287, decimals: 4 },
   { k: 'PRE-CALIB GATE', v: 0.75, decimals: 2 },
@@ -26,24 +29,27 @@ const FEATURES = [
   },
 ]
 
-// Real numbers from PLAN.md's 2026-09-25 L_calib run against the verified
-// AUROC=0.9920 checkpoint, from eval_spatial.py (PLAN.md "Calibration — final
-// result"). Fishyscapes test half; every calibrator fit on the val half only.
+// Every number from eval_fishyscapes_T122.log (model_3head_best.pth /
+// model_3head_calib_best.pth, Fishyscapes test half, input scale 1; every
+// calibrator fit on the val half only). The temperature row uses the plain-NLL
+// refit T=1.2251; the earlier whole-image T was mis-fitted (MISTAKES.md M1).
 // bece = ECE restricted to pixels within 8px of a true anomaly edge.
+// Whole-image ECE is shown at 4 dp; temp(whole) is 0.00012 at 5 dp
+// (calibrate_compare_T122.log).
 const CALIB_MODELS = [
   {
     id: 'raw',
     label: 'Raw',
     sub: 'Sigmoid, no calibration',
     auroc: 0.9920, ap: 0.6215, ece: 0.0004, bece: 0.2273,
-    note: 'Near-perfect whole-image ECE (0.0004) hides a boundary ECE of 0.2273, about 570× worse. With only 0.28% of pixels anomalous, whole-image ECE is dominated by easy background. At object edges the model is under-confident: true-anomaly edge pixels average a score of 0.36.',
+    note: 'Near-perfect whole-image ECE (0.0004) hides a boundary ECE of 0.2273. With well under 1% of pixels anomalous, whole-image ECE is dominated by easy background. At object edges the model is under-confident: true-anomaly edge pixels average a score of 0.36.',
   },
   {
     id: 'temp',
-    label: 'T = 1.71',
-    sub: 'Temperature fit on the whole image',
-    auroc: 0.9924, ap: 0.6193, ece: 0.0020, bece: 0.1845,
-    note: 'Standard temperature scaling, fit on held-out real images. It improves the boundary a little by pulling all scores toward 0.5. That also raises scores on normal pixels next to objects.',
+    label: 'T = 1.2251',
+    sub: 'Temperature fit on the whole image (plain NLL)',
+    auroc: 0.9924, ap: 0.6206, ece: 0.0001, bece: 0.2095,
+    note: 'Standard temperature scaling, fit by plain NLL on held-out real images. It calibrates the whole image (ECE 0.00012) but barely moves the edges: 0.2273 to 0.2095. One global temperature is tuned to the background pixels that make up almost all of the image.',
   },
   {
     id: 'mixed',
@@ -57,14 +63,14 @@ const CALIB_MODELS = [
     label: 'T = 4.36',
     sub: 'Temperature fit on boundary pixels only',
     auroc: 0.9925, ap: 0.6173, ece: 0.0420, bece: 0.0942,
-    note: 'Halves boundary ECE compared with T = 1.71, but whole-image ECE gets 20× worse. The whole image wants T ≈ 1.7 and the edges want T ≈ 4.4. No single temperature fixes both. That trade-off is the finding.',
+    note: 'Cuts boundary ECE from 0.2095 (T = 1.2251) to 0.0942, but whole-image ECE rises from 0.0001 to 0.0420. The whole image wants T ≈ 1.2 and the edges want T ≈ 4.4, fitted on the same objective. No single temperature fixes both. That trade-off is the finding.',
   },
   {
     id: 'calib',
     label: 'L_calib',
     sub: 'Joint fine-tune on CutMix pastes, soft-ECE surrogate',
     auroc: 0.9924, ap: 0.6024, ece: 0.0005, bece: 0.2396,
-    note: 'Calibration learned from training pastes transfers the wrong correction. It lowered edge scores, which helps on training-like CARLA objects but makes real Fishyscapes edges more under-confident (worse than raw, CI excludes 0). Calibration has to be fit on held-out real data.',
+    note: 'Calibration learned from training pastes transfers the wrong correction. It lowers edge scores. On real Fishyscapes, where edges are under-confident, that is worse than raw and worse than temperature scaling (CIs exclude 0). On a pasted CARLA driving route, where edges are over-confident, it beats raw but is no better than the same whole-image temperature. Calibration has to be fit on held-out real data.',
   },
 ]
 
@@ -157,8 +163,8 @@ function CalibrationPanel() {
   const raw = CALIB_MODELS[0]
 
   const rows = [
-    { label: 'AUROC', key: 'auroc', decimals: 4, higherBetter: true },
     { label: 'AP', key: 'ap', decimals: 4, higherBetter: true },
+    { label: 'AUROC', key: 'auroc', decimals: 4, higherBetter: true },
     { label: 'ECE (whole image)', key: 'ece', decimals: 4, higherBetter: false },
     { label: 'ECE (object edges, r=8)', key: 'bece', decimals: 4, higherBetter: false },
   ]

@@ -12,14 +12,13 @@ Frozen SegFormer backbone + segmentation head + 3 independently-seeded OOD detec
 |---|---|---|
 | 0.8304 | 0.0154 | 0.6802 |
 
-**Experiment B (TwinGuard, RunPod mit-b5 runs complete)** — after fixing an OOD-head collapse bug (severe class imbalance letting the model learn "predict nothing is anomalous"), two real RunPod A40 runs on the full `mit-b5` backbone:
+**Experiment B (TwinGuard, current model)** — frozen Cityscapes SegFormer-B5 encoder + 3 independently seeded OOD heads (BCE-with-logits), trained 8 epochs with CutMix pastes from a 2000-object bank (500 CARLA tiles of 45 objects + 1500 of 3000 COCO cutouts, `ANOMALY_SOURCE="both"`). Epoch 4 selected on the Fishyscapes val half; numbers below are the held-out test half (`train.log`):
 
-| Run | Config | Best AUROC |
-|---|---|---|
-| Checkpoint A | flat LR (`USE_OOD_HEAD_LR_SPLIT=False`) | 0.5727 |
-| Checkpoint B | OOD heads at 10x lower LR (`USE_OOD_HEAD_LR_SPLIT=True`) | **0.6190** (epoch 1; degrades with further training) |
+| Checkpoint | AUROC | AP | FPR@95 | ECE | mIoU (Cityscapes) |
+|---|---|---|---|---|---|
+| `model_3head_best.pth` (repo root, `config.PRIMARY_RAW`) | **0.9920** | 0.6218 | 0.0287 | 0.0004 | 0.7616 |
 
-Neither run clears the 0.75 pre-calibration gate yet. Checkpoint B's epoch-1 weights are the current live-demo checkpoint (see `checkpoints/`, loaded by `server.py`). Full per-epoch logs for both runs are in `server.py`'s `EXPERIMENT_HISTORY` and rendered on the demo's "Training Runs" page.
+Head disagreement alone scores AUROC 0.9865. This is the checkpoint `server.py` loads. Earlier runs (Checkpoint A 0.5727, Checkpoint B 0.6190, both before the collapse fix) are kept in `server.py`'s `EXPERIMENT_HISTORY` and on the demo's "Training Runs" page. Temperature scaling uses a plain-NLL fit on the Fishyscapes val half, T = 1.2251 (`eval_fishyscapes_T122.log`); the earlier T=1.71 came from a mis-fitted objective (`MISTAKES.md` M1).
 
 Numeric gates: **0.75 AUROC** is the pre-calibration gate to proceed to Phase 2b (`L_calib`); **0.83** (Experiment A's baseline) remains the actual post-calibration target — the bar hasn't moved, calibration is a stated, accounted-for tradeoff (see `config.py`'s `CALIBRATION_TRADEOFF_NOTE`).
 
@@ -59,7 +58,7 @@ python check_data.py            # CutMix composites + object-size stats for the 
 python check_data.py --object N # inspect one raw object from that bank
 python check_runs.py            # pull all MLflow runs, compare metrics
 python check_runs.py --trend    # per-epoch history for the latest run
-python check_collapse.py        # separation diagnostic on the trained OOD heads
+python check_collapse.py --checkpoint model_3head_best.pth   # separation diagnostic on the trained OOD heads
 python validate_metrics.py      # self-check of metrics.py against reference values
 python make_upload.py           # package code (no data) into twinguard_code.zip for RunPod
 ```
@@ -99,9 +98,10 @@ cd frontend && npm install && npm run dev   # frontend, http://localhost:5173
 ```
 
 The frontend dev server proxies `/api` and `/static` to the backend (`frontend/vite.config.js`),
-so both processes need to be running. To force the backend to rebuild its cached demo
-output (e.g. after changing `server.py`'s panel/score logic), delete `static/generated/`
-and restart it.
+so both processes need to be running. The backend caches its demo panels in
+`static/generated/test_half/` with a `meta.json` naming the checkpoint and pipeline version,
+and rebuilds them by itself when either changes (bump `CACHE_VERSION` in `server.py` after
+changing its panel/score logic).
 
 ## Cloud training (RunPod)
 

@@ -19,8 +19,10 @@ construction. An earlier version of this check flagged a model scoring
 train.py logs all of this every epoch; this script is for inspecting a
 checkpoint after the fact.
 
-    python check_collapse.py
+    python check_collapse.py --checkpoint model_3head_best.pth
 """
+
+import argparse
 
 import numpy as np
 import torch
@@ -35,9 +37,16 @@ from utils import get_device, load_trained_model
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    # Required: load_trained_model no longer falls back to the stale
+    # config.CHECKPOINT_3HEAD (MISTAKES.md M15).
+    parser.add_argument("--checkpoint", required=True,
+                        help=f"checkpoint to inspect, e.g. {config.PRIMARY_RAW}")
+    args = parser.parse_args()
+
     device = get_device()
     num_heads = len(config.OOD_HEAD_SEEDS_3HEAD)
-    model = load_trained_model(device=device, num_heads=num_heads)
+    model = load_trained_model(args.checkpoint, device=device, num_heads=num_heads)
 
     pos_scores = [[] for _ in range(num_heads)]
     neg_scores = [[] for _ in range(num_heads)]
@@ -59,7 +68,7 @@ def main():
                 pos_scores[h].append(per_head[h][labels == 1])
                 neg_scores[h].append(per_head[h][labels != 1])
 
-    print(f"\ncheckpoint: {config.CHECKPOINT_3HEAD}")
+    print(f"\ncheckpoint: {args.checkpoint}")
     print(f"encoder:    {config.ENCODER_NAME}\n")
 
     for h in range(num_heads):

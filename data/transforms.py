@@ -40,7 +40,7 @@ def denormalize_imagenet(image_t):
     return (image_t * std + mean).clamp(0.0, 1.0)
 
 
-def load_image_tensor(image_path, device=None):
+def load_image_tensor(image_path, device=None, size=None):
     """Disk -> (1,3,H,W) tensor in encoder space.
 
     The single entry point for turning an image file into model input, used
@@ -48,9 +48,13 @@ def load_image_tensor(image_path, device=None):
     rather than in a training script because the one bug this module exists
     to prevent -- evaluation preprocessing drifting away from training
     preprocessing -- is exactly what happens when each caller rolls its own.
+
+    size=(width, height) overrides the resize target for the eval-only
+    full-resolution test (PLAN.md P3). The default is the training
+    resolution; training and dataset code never pass it.
     """
-    image = Image.open(image_path).convert("RGB").resize(
-        (config.INPUT_WIDTH, config.INPUT_HEIGHT), Image.BILINEAR)
+    size = size or (config.INPUT_WIDTH, config.INPUT_HEIGHT)
+    image = Image.open(image_path).convert("RGB").resize(size, Image.BILINEAR)
     tensor = torch.from_numpy(np.asarray(image, dtype=np.uint8).copy())
     tensor = tensor.permute(2, 0, 1).float().unsqueeze(0) / 255.0
     tensor = normalize_imagenet(tensor)

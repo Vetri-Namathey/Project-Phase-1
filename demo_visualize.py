@@ -57,6 +57,8 @@ def main():
     print(f"device: {device}")
 
     model = TwinGuardModel(num_ood_heads=3, ood_seeds=config.OOD_HEAD_SEEDS_3HEAD).to(device)
+    # Reads the stale training-output path, not the primary model (MISTAKES.md M15).
+    # Old diagnostic, unused by the current plan.
     model.load_state_dict(torch.load(config.CHECKPOINT_3HEAD, map_location=device, weights_only=True))
     model.eval()
     print(f"loaded checkpoint: {config.CHECKPOINT_3HEAD}")

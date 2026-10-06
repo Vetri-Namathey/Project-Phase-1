@@ -52,6 +52,14 @@ FISHYSCAPES_LABELS_DIR = _data_path(
 FISHYSCAPES_IMAGES_ROOT = _data_path(
     "FISHYSCAPES_IMAGES_ROOT", "leftImg8bit", "leftImg8bit")
 
+# RoadAnomaly21 (SegmentMeIfYouCan anomaly track, zenodo 5270237). Only the 10
+# validation images have public labels (0 normal, 1 anomaly, 255 void -- same
+# encoding as Fishyscapes). Eval-only (PLAN.md P5): nothing is fitted or
+# selected on it. Ported from exp_v2.
+ROAD_ANOMALY21_DIR = _data_path(
+    "ROAD_ANOMALY21_DIR", "road_anomaly21", "dataset_AnomalyTrack")
+ROAD_ANOMALY21_ZIP_MD5 = "231bf79ed58924bcd33d9cbe22e61076"
+
 # CARLA-generated OOD objects, from generate_anomalies.py (needs a running
 # CARLA server). This remains the canonical anomaly source for the project.
 CARLA_IMAGES_DIR = "data/images"
@@ -62,9 +70,21 @@ CARLA_MASKS_DIR = "data/masks"
 # WITH the CARLA bank rather than replacing it -- see ANOMALY_SOURCE below.
 COCO_OBJECTS_DIR = "data/coco_objects"
 
+# Training OUTPUT paths only; never point at the primary files (MISTAKES.md
+# M15). train.py and calibrate.py --train-lcalib WRITE here, so repointing
+# these at the repo root would let any retrain overwrite the primary model.
+# The files under checkpoints/ on this machine are stale (an older run).
 CHECKPOINT_DIR = "checkpoints"
 CHECKPOINT_1HEAD = os.path.join(CHECKPOINT_DIR, "model_1head_best.pth")
 CHECKPOINT_3HEAD = os.path.join(CHECKPOINT_DIR, "model_3head_best.pth")
+
+# The models every reported number comes from: the 2000-object-bank run
+# (500 CARLA tiles + 1500 COCO, train.log: test AUROC 0.9920) and its L_calib
+# fine-tune. Read-only references for server.py and help texts. Eval scripts
+# still take explicit --raw/--calib paths (standing rule 11), so a command
+# line always says which file it scored.
+PRIMARY_RAW = "model_3head_best.pth"
+PRIMARY_CALIB = "model_3head_calib_best.pth"
 
 # ---------------------------------------------------------------------------
 # Anomaly source (training outlier exposure)
@@ -236,10 +256,23 @@ CALIB_AUROC_DROP_LIMIT = 0.03  # restart if val AUROC falls more than this
                                 # relative to the starting checkpoint (see
                                 # CALIBRATION_TRADEOFF_NOTE -- a *small*,
                                 # accounted-for cost, not an open-ended one)
+# Training output path (see the CHECKPOINT_3HEAD comment): never the primary file.
 CHECKPOINT_3HEAD_CALIB = os.path.join(CHECKPOINT_DIR, "model_3head_calib_best.pth")
+
+# Read only by calibrate._fit_temperature_weighted_DEPRECATED, kept so the
+# invalid T=1.7142 can be reproduced (MISTAKES.md M1). Nothing reaches it.
 TEMPERATURE_LEARNING_RATE = 0.01
-TEMPERATURE_EPOCHS = 3   # passes over the (small, 50-image) val half to fit
-                          # the single scalar T -- cheap, converges fast
+TEMPERATURE_EPOCHS = 3
+
+# Temperature scaling baseline, ported from exp_v2. T is fitted by
+# minimising PLAIN binary NLL (no pos_weight) with a bounded 1-D search over
+# log T -- a deterministic fit, not a few optimiser steps. The old fit used
+# the training loss (pos_weight=20) for 3 Adam epochs and stopped while T was
+# still rising (calibrate.log: 1.5688 -> 1.6421 -> 1.7142). pos_weight=20
+# rewards pushing scores up, so its optimum sits above the NLL optimum: that
+# is why its "temp-scaled" whole ECE (0.0020) was worse than raw (0.0004).
+TEMPERATURE_LOG_BOUNDS = (-3.0, 3.0)   # search log T, i.e. T in [0.05, 20]
+TEMPERATURE_BAND_RADIUS_PX = 8         # band T is fitted on the r=8 band, like C2
 
 # ---------------------------------------------------------------------------
 # CutMix anomaly pasting

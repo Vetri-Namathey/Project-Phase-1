@@ -1,0 +1,19 @@
+{
+  "frames": 400,
+  "threshold": 0.5,
+  "min_box_px": 150,
+  "root": "video_town02_pasted",
+  "baseline": "head 0 of the 3-head model (ablation, not Experiment A)",
+  "totals": {
+    "baseline": {
+      "gt_objects": 1245,
+      "found": 858,
+      "false_boxes": 1361
+    },
+    "ours": {
+      "gt_objects": 1245,
+      "found": 862,
+      "false_boxes": 1434
+    }
+  }
+}
