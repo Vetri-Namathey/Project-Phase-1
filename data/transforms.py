@@ -53,8 +53,14 @@ def load_image_tensor(image_path, device=None, size=None):
     full-resolution test (PLAN.md P3). The default is the training
     resolution; training and dataset code never pass it.
     """
+    return pil_to_tensor(Image.open(image_path), device, size)
+
+
+def pil_to_tensor(image, device=None, size=None):
+    """The body of load_image_tensor for an image already in memory (e.g. a
+    decoded video frame), so both paths share one preprocessing."""
     size = size or (config.INPUT_WIDTH, config.INPUT_HEIGHT)
-    image = Image.open(image_path).convert("RGB").resize(size, Image.BILINEAR)
+    image = image.convert("RGB").resize(size, Image.BILINEAR)
     tensor = torch.from_numpy(np.asarray(image, dtype=np.uint8).copy())
     tensor = tensor.permute(2, 0, 1).float().unsqueeze(0) / 255.0
     tensor = normalize_imagenet(tensor)

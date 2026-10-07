@@ -237,7 +237,7 @@ def evaluate_regions(model, pairs, device, temperature=1.0,
     return hists
 
 
-def run_calib_finetune(base_checkpoint, device):
+def run_calib_finetune(base_checkpoint, device, beta=config.BETA_CALIB, out_path=config.CHECKPOINT_3HEAD_CALIB):
     """Continues training an already-converged checkpoint with SoftECELoss
     added to the existing loss. Selection reads val ECE (what this fine-tune
     actually exists to fix), guarded by the AUROC-drop limit -- restart, do
@@ -295,7 +295,7 @@ def run_calib_finetune(base_checkpoint, device):
                     out["seg_logits"].float(), seg_labels,
                     out["ood_logits"].float(), ood_target, seg_criterion)
                 l_calib = soft_ece(out["ood_fused"].float(), ood_target)
-                loss = base_loss + config.BETA_CALIB * l_calib
+                loss = base_loss + beta * l_calib
             loss.backward()
             optimizer.step()
 
@@ -324,7 +324,7 @@ def run_calib_finetune(base_checkpoint, device):
         if score > best_score:
             best_score = score
             best_epoch = epoch
-            torch.save(model.state_dict(), config.CHECKPOINT_3HEAD_CALIB)
+            torch.save(model.state_dict(), out_path)
             print(f"  -> new best val ECE {val_ece:.4f}, checkpoint saved")
 
     if best_epoch == -1:
@@ -333,8 +333,8 @@ def run_calib_finetune(base_checkpoint, device):
             "calibrated checkpoint was saved. See the CALIB_* settings in "
             "config.py (BETA_CALIB, CALIB_EPOCHS, CALIB_AUROC_DROP_LIMIT)."
         )
-    print(f"L_calib fine-tune done. selected epoch {best_epoch + 1}")
-    return config.CHECKPOINT_3HEAD_CALIB
+    print(f"L_calib fine-tune done (beta={beta}). selected epoch {best_epoch + 1} -> {out_path}")
+    return out_path
 
 
 def comparison_table(rows):
@@ -439,9 +439,11 @@ def run_temp_only(args):
 def run_train_lcalib(args):
     # Belt and braces for M15: the fine-tune writes CHECKPOINT_3HEAD_CALIB,
     # which must never resolve to a primary model file.
-    out = os.path.abspath(config.CHECKPOINT_3HEAD_CALIB)
+    out = os.path.abspath(args.out)
     assert out not in (os.path.abspath(config.PRIMARY_RAW), os.path.abspath(config.PRIMARY_CALIB)), \
-        f"CHECKPOINT_3HEAD_CALIB points at a primary model file ({out}) -- see M15"
+        f"--out points at a primary model file ({out}) -- see M15"
+    if os.path.exists(out):
+        raise SystemExit(f"--out {out} already exists; refusing to overwrite a checkpoint (pick a new name)")
     device = get_device()
     raw_model = load_trained_model(args.checkpoint, device)
     fishy_val, fishy_test = _fishyscapes_split()
@@ -452,13 +454,13 @@ def run_train_lcalib(args):
     with mlflow.start_run(run_name="l_calib_finetune"):
         mlflow.log_params({
             "base_checkpoint": args.checkpoint,
-            "beta_calib": config.BETA_CALIB,
+            "beta_calib": args.beta,
             "calib_epochs": config.CALIB_EPOCHS,
             "calib_lr": config.CALIB_LEARNING_RATE,
             "auroc_drop_limit": config.CALIB_AUROC_DROP_LIMIT,
             "fitted_temperature": temperature,
         })
-        calib_checkpoint = run_calib_finetune(args.checkpoint, device)
+        calib_checkpoint = run_calib_finetune(args.checkpoint, device, beta=args.beta, out_path=out)
         calib_model = load_trained_model(calib_checkpoint, device)
         rows = [("raw", evaluate_regions(raw_model, fishy_test, device, 1.0)),
                 (f"temp(whole) T={temperature:.4f}",
@@ -488,6 +490,10 @@ def build_parser():
                         help="--temp-only / --train-lcalib: base checkpoint (explicit, M15)")
     parser.add_argument("--temp-whole", type=float, default=None,
                         help="--compare-only: use this whole-image T instead of refitting")
+    parser.add_argument("--beta", type=float, default=config.BETA_CALIB,
+                        help="--train-lcalib: weight on L_calib (PLAN.md beta sweep)")
+    parser.add_argument("--out", default=config.CHECKPOINT_3HEAD_CALIB,
+                        help="--train-lcalib: output checkpoint; must not exist yet")
     parser.add_argument("--png", default="calibration_reliability_T122.png",
                         help=f"reliability diagram output (never {LEGACY_PNG})")
     return parser
@@ -505,6 +511,9 @@ def parse_args(argv=None):
         parser.error("--temp-only / --train-lcalib require --checkpoint")
     if args.temp_whole is not None and not args.compare_only:
         parser.error("--temp-whole is only used by --compare-only")
+    if args.train_lcalib and args.png == parser.get_default("png"):
+        # never overwrite the signed T122 diagram from a sweep run
+        args.png = f"calibration_reliability_lcalib_beta{args.beta:g}.png"
     return args
 
 

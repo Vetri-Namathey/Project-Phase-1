@@ -490,3 +490,19 @@ h1, h2, .display{ font-family:'Archivo Black', sans-serif; text-transform:upperc
 .ra-track{ height:12px; background:var(--surface-2); border-radius:6px; overflow:hidden; }
 .ra-fill{ height:100%; background:var(--accent); border-radius:6px; transition:width var(--dur-slow) var(--ease); }
 .ra-val{ text-align:right; }
+
+/* /demo live upload */
+.live-panel{ padding:18px; }
+.live-panel:hover{ transform:none; }
+.live-drop{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; min-height:140px;
+  border:2px dashed var(--line); background:var(--surface-2); cursor:pointer; text-align:center; padding:18px;
+  transition:background var(--dur) var(--ease), border-color var(--dur) var(--ease); }
+.live-drop:hover, .live-drop.drag{ background:var(--accent-soft); border-color:var(--accent); }
+.live-drop.busy{ opacity:0.6; cursor:progress; }
+.live-drop input{ display:none; }
+.live-drop-t{ font-size:16px; font-weight:700; }
+.live-drop-d{ font-size:12px; color:var(--ink-dim); }
+.live-err{ margin-top:12px; padding:10px 12px; border:2px solid #D0452F; color:#D0452F; font-size:14px; }
+.live-result{ margin-top:16px; }
+.live-img{ display:block; width:100%; border:2px solid var(--line); }
+.live-stats{ margin-top:14px; }

@@ -98,3 +98,6 @@ static_react/
 # The demo video IS needed by a fresh clone (/demo plays it; ~16 MB, under GitHub's
 # 100 MB limit). Everything else *.mp4 stays ignored.
 !/static/video/twinguard_video_town02_pasted.mp4
+
+# Separate MLflow DB for runs on this machine's (older) MLflow; mlflow.db came from a newer pod version
+/mlflow_*.db

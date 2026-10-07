@@ -30,15 +30,18 @@ click-through UX unchanged:
     ones in static/generated/demo_* stay on disk untouched.
 """
 
+import base64
+import io
 import json
 import os
+import time
 
 import cv2
 import matplotlib
 import numpy as np
 import torch
 import torch.nn.functional as F
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from PIL import Image
@@ -419,6 +422,202 @@ def get_history():
 @app.get("/api/training-samples")
 def get_training_samples():
     return _training_samples_cache
+
+
+# --- Live inference on an uploaded image ("yes" item 14) -------------------
+# The request body is the raw image file (no multipart, so no extra package).
+# Same preprocessing and scoring path as score_maps / evaluation, and the same
+# fixed val-fitted box threshold. Timings use cuda.synchronize so they are real.
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+LIVE_MAX_WIDTH = 2048  # score at most at Fishyscapes label width
+_live_model = None
+
+
+def _png_b64(image):
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _sync(device):
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+
+
+@torch.no_grad()
+def infer_bytes(data, model, device):
+    t0 = time.perf_counter()
+    raw_image = Image.open(io.BytesIO(data)).convert("RGB")
+    w, h = raw_image.size
+    if w > LIVE_MAX_WIDTH:
+        h, w = int(round(h * LIVE_MAX_WIDTH / w)), LIVE_MAX_WIDTH
+    tensor = load_image_tensor(io.BytesIO(data), device)
+    _sync(device)
+    t1 = time.perf_counter()
+    with amp_context(device):
+        out = model(tensor)
+    _sync(device)
+    t2 = time.perf_counter()
+    logits = F.interpolate(out["ood_logits"].float(), size=(h, w), mode="bilinear", align_corners=False)
+    per_head = torch.sigmoid(logits).squeeze(0).cpu().numpy()
+    fused = per_head.mean(axis=0)
+    disagreement = per_head.std(axis=0)
+    _sync(device)
+    t3 = time.perf_counter()
+
+    out_size = (DISPLAY_WIDTH, int(h * DISPLAY_WIDTH / w))
+    display = resize_for_display(raw_image.resize((w, h), Image.BILINEAR))
+    detection, boxes = draw_detection_box(raw_image.resize((w, h), Image.BILINEAR), fused, out_size)
+    d_max = float(disagreement.max()) or 1.0
+    return {
+        "width": w, "height": h,
+        "input": _png_b64(display),
+        "fused": _png_b64(apply_colormap(fused, "inferno", out_size)),
+        "disagreement": _png_b64(apply_colormap(disagreement / d_max, "viridis", out_size)),
+        "detection": _png_b64(detection),
+        "boxes": boxes,
+        "threshold": BOX_THRESHOLD,
+        "max_score": float(fused.max()),
+        "flagged_fraction": float((fused >= BOX_THRESHOLD).mean()),
+        "timing_ms": {"preprocess": round(1000 * (t1 - t0), 1), "model_forward": round(1000 * (t2 - t1), 1),
+                      "upsample_and_score": round(1000 * (t3 - t2), 1), "total": round(1000 * (t3 - t0), 1)},
+        "device": torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu",
+        "checkpoint": CHECKPOINT,
+    }
+
+
+@app.post("/api/infer")
+async def infer(request: Request):
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "send the image file as the request body")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"image larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
+    try:
+        Image.open(io.BytesIO(data)).verify()
+    except Exception:
+        raise HTTPException(415, "not a readable image (use JPG or PNG)")
+    model, device = _get_live_model()
+    return infer_bytes(data, model, device)
+
+
+# --- Uploaded video: score every sampled frame, return a playable mp4 --------
+# Not real time: the clip is processed, then played back. Frames are sampled at
+# VIDEO_FPS and capped at VIDEO_MAX_FRAMES so a long clip cannot hold the GPU
+# for minutes. Each output frame = detection (boxes at BOX_THRESHOLD) on top,
+# anomaly-score heatmap below, same scoring path as the image endpoint.
+MAX_VIDEO_BYTES = 200 * 1024 * 1024
+VIDEO_FPS = 10
+VIDEO_MAX_FRAMES = 300  # 30 s at 10 fps
+VIDEO_SCORE_WIDTH = 1024
+UPLOAD_DIR = os.path.join(GENERATED_DIR, "uploads")
+UPLOADS_KEPT = 5
+
+
+def _get_live_model():
+    global _live_model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if _live_model is None:
+        _live_model = load_trained_model(CHECKPOINT, device)
+        dummy = torch.zeros(1, 3, config.INPUT_HEIGHT, config.INPUT_WIDTH, device=device)
+        with torch.no_grad(), amp_context(device):
+            _live_model(dummy)  # warm-up so the first timing is not the CUDA init
+    return _live_model, device
+
+
+@torch.no_grad()
+def infer_video_bytes(data, model, device):
+    import av
+    from data.transforms import pil_to_tensor
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    name = f"upload_{int(time.time() * 1000)}.mp4"
+    out_path = os.path.join(UPLOAD_DIR, name)
+    src = av.open(io.BytesIO(data))
+    vstream = src.streams.video[0]
+    src_fps = float(vstream.average_rate or 25)
+    step = max(1.0, src_fps / VIDEO_FPS)
+
+    out, ostream = None, None
+    forward_ms, total_ms, frames_with_box, max_score, kept = [], [], 0, 0.0, 0
+    next_pick = 0.0
+    for i, frame in enumerate(src.decode(vstream)):
+        if i + 1e-6 < next_pick:
+            continue
+        next_pick += step
+        t0 = time.perf_counter()
+        img = frame.to_image()
+        w, h = img.size
+        sw = min(w, VIDEO_SCORE_WIDTH)
+        sh = int(round(h * sw / w))
+        tensor = pil_to_tensor(img, device)
+        _sync(device)
+        t1 = time.perf_counter()
+        with amp_context(device):
+            logits = model(tensor)["ood_logits"].float()
+        _sync(device)
+        forward_ms.append(1000 * (time.perf_counter() - t1))
+        fused = torch.sigmoid(F.interpolate(logits, size=(sh, sw), mode="bilinear",
+                                            align_corners=False)).mean(dim=1).squeeze(0).cpu().numpy()
+        out_w = DISPLAY_WIDTH
+        out_h = int(sh * DISPLAY_WIDTH / sw) // 2 * 2  # yuv420p needs even sizes
+        detection, boxes = draw_detection_box(img.resize((sw, sh), Image.BILINEAR), fused, (out_w, out_h))
+        heat = apply_colormap(fused, "inferno", (out_w, out_h))
+        panel = np.concatenate([np.array(detection), np.array(heat)], axis=0)
+        if out is None:
+            out = av.open(out_path, mode="w")
+            ostream = out.add_stream("libx264", rate=VIDEO_FPS)
+            ostream.width, ostream.height = panel.shape[1], panel.shape[0]
+            ostream.pix_fmt = "yuv420p"
+            ostream.options = {"crf": "23"}
+        for packet in ostream.encode(av.VideoFrame.from_ndarray(panel, format="rgb24")):
+            out.mux(packet)
+        total_ms.append(1000 * (time.perf_counter() - t0))
+        frames_with_box += boxes > 0
+        max_score = max(max_score, float(fused.max()))
+        kept += 1
+        if kept >= VIDEO_MAX_FRAMES:
+            break
+    src.close()
+    if out is None:
+        raise HTTPException(415, "no decodable video frames")
+    for packet in ostream.encode():
+        out.mux(packet)
+    out.close()
+
+    # keep only the newest few uploads on disk
+    old = sorted(f for f in os.listdir(UPLOAD_DIR) if f.startswith("upload_") and f.endswith(".mp4"))
+    for f in old[:-UPLOADS_KEPT]:
+        os.remove(os.path.join(UPLOAD_DIR, f))
+
+    return {
+        "url": f"/static/generated/uploads/{name}",
+        "frames": kept, "fps": VIDEO_FPS, "source_fps": round(src_fps, 2),
+        "truncated": kept >= VIDEO_MAX_FRAMES,
+        "frames_with_box": int(frames_with_box), "max_score": max_score,
+        "threshold": BOX_THRESHOLD,
+        "ms_per_frame": {"model_forward": round(float(np.median(forward_ms)), 1),
+                         "total": round(float(np.median(total_ms)), 1)},
+        "device": torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu",
+        "checkpoint": CHECKPOINT,
+    }
+
+
+@app.post("/api/infer-video")
+async def infer_video(request: Request):
+    from starlette.concurrency import run_in_threadpool
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "send the video file as the request body")
+    if len(data) > MAX_VIDEO_BYTES:
+        raise HTTPException(413, f"video larger than {MAX_VIDEO_BYTES // (1024 * 1024)} MB")
+    model, device = _get_live_model()
+    try:
+        return await run_in_threadpool(infer_video_bytes, data, model, device)
+    except HTTPException:
+        raise
+    except Exception as e:  # av raises its own error types for unreadable files
+        raise HTTPException(415, f"could not read this video ({type(e).__name__}); try an MP4")
 
 
 @app.get("/")

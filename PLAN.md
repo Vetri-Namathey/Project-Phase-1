@@ -45,6 +45,149 @@ are in `MISTAKES.md`; read it before any step.
 
 ## RESUME HERE (2026-10-05, after U2)
 
+> **UPDATE 2026-10-07: β = 0.05 is DONE (no help; see Y-results). NEXT = the β = 0 control**,
+> then the user decides on 0.1 / 0.2. The user is pushing first. Commands:
+> `$env:MLFLOW_TRACKING_URI = "sqlite:///mlflow_sweep.db"`;
+> `python calibrate.py --train-lcalib --checkpoint model_3head_best.pth --beta 0 --out checkpoints/lcalib_beta0.pth | Tee-Object -FilePath lcalib_beta0_train.log`;
+> `python eval_spatial.py --dataset fishyscapes --raw model_3head_best.pth --calib checkpoints/lcalib_beta0.pth | Tee-Object -FilePath eval_lcalib_beta0.log`.
+> The block below is the older plan, kept for reference.
+>
+> **START HERE TOMORROW (saved 2026-10-06 evening): the Y1 β sweep, from scratch.**
+> - Done today:
+>   - Y2 threshold sweep: C5 outline gain is THRESHOLD-DEPENDENT.
+>   - Y3 latency: 92.1 ms forward, 176 ms end to end.
+>   - Live image + video upload on /demo.
+>   - Thesis updated; zip rebuilt.
+> - The user ran nothing for β yet: the first attempt hit the MLflow DB crash (M24, fixed), and
+>   the second was stopped early.
+> - User commands, in one terminal:
+>   1. `cd` to TwinGuard_CARLA; `conda activate cuda_test`;
+>      `$env:MLFLOW_TRACKING_URI = "sqlite:///mlflow_sweep.db"` (the DB already exists and is
+>      reused).
+>   2. `Test-Path checkpoints\lcalib_beta0.05.pth`. If True, use `lcalib_beta0.05_run2.pth` in
+>      both β = 0.05 commands (never overwrite or delete).
+>   3. For β = 0.05, 0.1, 0.2:
+>      `python calibrate.py --train-lcalib --checkpoint model_3head_best.pth --beta <b> --out checkpoints/lcalib_beta<b>.pth | Tee-Object -FilePath lcalib_beta<b>_train.log`
+>      then
+>      `python eval_spatial.py --dataset fishyscapes --raw model_3head_best.pth --calib checkpoints/lcalib_beta<b>.pth | Tee-Object -FilePath eval_lcalib_beta<b>.log`
+>      (about 30–40 min per β, 1.5–2 h total).
+> - Then (orchestrator):
+>   - Judge against the Y1 rule (below, "Y-ITEMS"). Prediction: every β falls between raw 0.2273
+>     and β=1's 0.2396.
+>   - Add a β row to `paper/TABLES.md` (Table 9), to thesis chapter 5 (the β = 50 note becomes a
+>     sweep table), and to the friend's status table (item 6).
+>   - Rebuild `TwinGuard_Thesis_Overleaf.zip`.
+> - Still parked: the open user questions below (A1 eyeball, COCO provenance, min box, /demo
+>   look).
+
+**OPEN USER QUESTIONS (parked 2026-10-06 at the user's request; ask again before signing P7):**
+1. Paper title: options 1–4 in `paper/TABLES.md` (orchestrator suggests #4).
+2. A1: eyeball `agent_state\a1_carla_tiles\contact_sheet.png`. Are the "misaligned" tiles really
+   wrong? This fixes k in Limitations (currently 15–21 of 45).
+3. U0-4: did `data/coco_objects` come from the training pod? (decides "no memorisation": firm
+   or provisional)
+4. P6b: keep video min box 150? (yes = no re-render)
+5. P6: does `/demo` look fine (X1 viewer, X5 cards, X2 ablation bars)? Home RA21 section added
+   2026-10-06.
+
+**Y-ITEMS (2026-10-06; the user approved the three "yes" items; rules written BEFORE any run):**
+- **Y1 β sweep.** `calibrate.py --train-lcalib` gained `--beta` and `--out`; `--out` refuses an
+  existing file or a primary model; each run's png gets its own name. Runs: β ∈ {0.05, 0.1, 0.2},
+  everything else as the β = 1 checkpoint (5 epochs, lr 1e-5, selection on val ECE). Each is
+  scored by `eval_spatial.py --dataset fishyscapes`.
+  - **Prediction:** every β has band-ECE r=8 between raw 0.2273 and β=1's 0.2396, i.e. worse
+    than raw.
+  - **Rule:** a β "helps" only if L_calib(β) − temp(1.2251) at r=8 has a CI entirely < 0 and AP
+    drops ≤ 0.01 vs raw. Otherwise: "no β tested beats a single temperature".
+  - CPU check: `agent_state/coder_checks/beta_sweep_cpu_check.py` PASS.
+- **Y2 threshold sweep.** `eval_threshold_sweep.py`, raw vs C5, matched by the fraction of VAL
+  pixels flagged (0.05–0.5%), never by threshold value (M11).
+  - **Sanity:** it must reproduce 40/85 and 59/85 at max-F1, else STOP.
+  - **Rule:** "robust" if the C5 − raw BF1 CI > 0 at ≥ 4 of 6 points, else "threshold-dependent".
+  - CPU check PASS.
+- **Y3 live demo + latency.** `server.py` gained `POST /api/infer` (the raw image file is the
+  body; same scoring path as evaluation; 400/413/415 guards; CUDA-synchronised timings). /demo
+  gains a "Try it on your own image" panel. `bench_latency.py` times the single pass (200 runs
+  after 20 warm-ups) and end-to-end.
+  - CPU check: `live_upload_cpu_check.py` PASS; max score identical to `score_maps`.
+  - **Rule:** report as a laptop-GPU number only; no in-vehicle claim.
+  - **Video upload (2026-10-06, user request):** `POST /api/infer-video`.
+    - The clip is sampled at 10 fps and capped at 30 s / 200 MB. Each frame is scored like an
+      image (shared `data.transforms.pil_to_tensor`; `load_image_tensor` now calls it, and the
+      tensors are verified identical).
+    - Output: an H.264 mp4 (detection over heatmap) in `static/generated/uploads/` (gitignored;
+      newest 5 kept).
+    - Processed, then played back: **not real time**.
+    - Docker: not needed (user decision).
+    - CPU check: `video_upload_cpu_check.py` PASS (30 frames at 25 fps → 12 frames).
+
+**Y-results (2026-10-06, the user's GPU runs):**
+- **Y3 latency (`bench_latency.log`):** RTX 3070 Laptop GPU, 1024×512, amp.
+  - Model forward: median **92.1 ms** (mean 94.6, p95 104.9; 10.9 fps).
+  - End-to-end (disk read + resize + forward + upsample to 2048×1024 + score): median **176.0 ms**
+    (p95 198.7; 5.7 fps).
+  - Peak GPU memory 0.91 GiB.
+  - Verdict: a laptop number, reported as such.
+- **Y2 threshold sweep (`eval_threshold_sweep.log`):** sanity PASS (40/85 and 59/85, far-FP
+  14.7% / 36.1%; C5 refit = the signed weights). C5 − raw BF1 by val-flagged fraction:
+  - 0.05%: +0.008 [−0.109, +0.129]
+  - 0.1%: −0.033 [−0.158, +0.115]
+  - 0.15%: −0.036 [−0.138, +0.076]
+  - 0.2%: +0.062 [−0.028, +0.153]
+  - **0.3%: +0.103 [+0.042, +0.162]**
+  - **0.5%: +0.154 [+0.098, +0.208]**
+
+  **2/6 → THRESHOLD-DEPENDENT.** The BF1 gain appears only at loose operating points, where
+  C5's far-FP is 37–51% of flagged pixels. C5 finds more objects at every point (34 vs 17 …
+  66 vs 52), but "found" means a flagged pixel within 32 px. That favours a calibrator that
+  spreads score into the surroundings, so it is exploratory, not evidence of better outlines.
+  **Finding 6 is narrowed:** the old "C5 improves outlines" holds only at its own max-F1 point
+  and at loose thresholds.
+- **Y1 β = 0.05 DONE 2026-10-07** (`lcalib_beta0.05_train.log`, `eval_lcalib_beta0.05.log`,
+  checkpoint `checkpoints/lcalib_beta0.05_run2.pth`, selected epoch 2 on val ECE).
+  - Sanity: every other row reproduces the signed T122 numbers exactly.
+  - Band-ECE r=8 **0.2409**; AP 0.5945; whole ECE 0.000593.
+  - L_calib − raw r=8 **+0.0136 [+0.0016, +0.0279]**.
+  - L_calib − temp r=8 **+0.0314 [+0.0188, +0.0433]**.
+  - **Rule: does not help** (worse than both; AP drop 0.027 > 0.01).
+  - **Prediction PARTLY WRONG, recorded:** predicted "between raw and β=1 (0.2273–0.2396)";
+    measured 0.2409, slightly above β=1. Direction right, ordering wrong.
+  - **Observation (not pre-registered):** in the training log the SoftECE term is about 0.0005
+    against a base loss of about 0.08, so β·L_calib is <1% of the loss even at β=1 and about
+    0.05% at β=0.05.
+    - The harm therefore comes from the 5-epoch fine-tune on CutMix pastes itself, not from the
+      calibration term.
+    - Proposed control: **β = 0** (same fine-tune, no L_calib). Predicted ≈ β=0.05 and ≈ β=1.
+    - β = 0.1 / 0.2 are expected to be uninformative; running them is the user's decision
+      (they were pre-registered, so skipping them is recorded as a decision).
+- **Y1 status 2026-10-06 evening:** the MLflow fix worked (a fresh `mlflow_sweep.db` was
+  created), but the user stopped the β = 0.05 run early (no time). The whole sweep is rerun the
+  next day: set `$env:MLFLOW_TRACKING_URI = "sqlite:///mlflow_sweep.db"` again (the DB is
+  reused). If `checkpoints/lcalib_beta0.05.pth` exists from the stopped run, use
+  `--out checkpoints/lcalib_beta0.05_run2.pth`; the guard refuses to overwrite, and nothing is
+  deleted. A partial run's checkpoint is never used for results.
+- **Y1 β sweep: NOT RUN (first attempt).** MLflow crashed before training ("Can't locate revision
+  b7e2c1a4d9f3"): `mlflow.db` was written by a newer MLflow (the pod) than `cuda_test` has. No
+  checkpoint was written. Rerun with `$env:MLFLOW_TRACKING_URI = "sqlite:///mlflow_sweep.db"`
+  (a fresh DB; `/mlflow_*.db` gitignored; the old `mlflow.db` is untouched). M24.
+
+**DONE 2026-10-06: thesis text written.**
+- Title chosen by the user in the template: "TwinGuard: Boundary-Aware Calibration Analysis for
+  Road Anomaly Detection" (Q1 closed).
+- **Moved 2026-10-06 into `../Thesis_Template___Amrita_AIE/Thesis_Template___Amrita_AIE/`** (the copies outside it were removed at the user's request; upload zip `../TwinGuard_Thesis_Overleaf.zip`). Files: `mythesis.tex` (title typo fixed, univa→univA, abstract, abbreviations, symbols, chapter titles)
+  and `../chapters/{introduction,chapter2..7,conclusion,appendix}.tex`. All live outside the
+  repo, next to `mythesis.tex`.
+- `../mybib.bib` (22 entries) and `../thesis_images/` (12 figures from `paper/make_figures.py`).
+- Pending items are marked `% PENDING` in chapter6/chapter7.
+- Not compiled locally (no LaTeX installed); static check passed.
+
+**(was) NEXT TASK (2026-10-06):** the user will send a .tex paper file.
+- Write its contents for this project from `paper/TABLES.md` and the signed results.
+- **Do not change the images/figures already in it.**
+- The user does the LaTeX formatting in Overleaf.
+- Every number must come from a log (rule 12); the open questions above stay marked as pending
+  in the text.
+
 **After a reset, read `agent_state/RESUME_AGENTS.md` first.**
 
 **P2/P6 review: SIGNED 2026-10-06 by the orchestrator.** The reviewer agents were stopped

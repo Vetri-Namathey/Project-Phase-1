@@ -81,6 +81,14 @@ Boundary F1, spill and miss are means over the objects found.
 C5 − raw per-image boundary F1: +0.0950 [+0.0349, +0.1543], over the 24/50 images where both
 find an object. This is bought with far false alarms (36.1% vs 14.7%) and AP (0.6215 → 0.4929).
 
+**Threshold sweep (`eval_threshold_sweep.log`).** Methods are matched by the fraction of val pixels
+flagged. The C5 − raw BF1 CI excludes 0 at only 2 of 6 points (0.3%: +0.103 [+0.042, +0.162];
+0.5%: +0.154 [+0.098, +0.208]), where C5's far-FP is 37–51%. Against the pre-registered rule the
+outline gain is **threshold-dependent**.
+
+**Latency (`bench_latency.log`, RTX 3070 Laptop GPU, amp):** forward median 92.1 ms (p95
+104.9); end-to-end 176.0 ms; peak memory 0.91 GiB. A laptop figure.
+
 ## Table 4. Calibration learned on pastes moves edges in the paste direction (Finding 4)
 
 | Data | edge direction (r=8 gap) | L_calib − raw, r=8 | L_calib − temp(1.2251), r=8 | Source |
