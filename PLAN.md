@@ -143,6 +143,25 @@ are in `MISTAKES.md`; read it before any step.
   spreads score into the surroundings, so it is exploratory, not evidence of better outlines.
   **Finding 6 is narrowed:** the old "C5 improves outlines" holds only at its own max-F1 point
   and at loose thresholds.
+- **Y1 β = 0 control DONE 2026-10-07** (`lcalib_beta0_train.log`, `eval_lcalib_beta0.log`,
+  `checkpoints/lcalib_beta0.pth`, selected epoch 5).
+  - Band-ECE r=8 **0.2267**; AP 0.6159; whole ECE 0.000555; objects found 45/85.
+  - − raw r=8 **−0.0007 [−0.0126, +0.0146]** (≈ raw).
+  - − temp r=8 **+0.0171 [+0.0048, +0.0289]** (worse).
+  - **My prediction ("β=0 ≈ β=0.05 ≈ β=1, harm comes from fine-tuning on pastes") was WRONG.**
+    The fine-tune without L_calib equals raw. The "fine-tune on pastes causes the harm"
+    explanation in the β = 0.05 entry below is **withdrawn**.
+  - **Signed conclusion of Y1:**
+    1. No β ∈ {0, 0.05, 1} beats a single temperature: every − temp CI at r=8 is > 0. The
+       pre-registered rule is answered.
+    2. L_calib gives no gain over the identical fine-tune without it; β = 0 is the best of the
+       three.
+    3. One run per β: the 0.05 / 1 vs 0 differences are within plausible run-to-run variation
+       (L_calib < 0.1% of the loss at β = 0.05; different selected epochs), so they are NOT
+       interpreted.
+  - β = 0.1 / 0.2: not run, by orchestrator recommendation pending the user. They cannot
+    resolve anything with single runs. Optional instead: a second β = 0 run to measure
+    run-to-run variance.
 - **Y1 β = 0.05 DONE 2026-10-07** (`lcalib_beta0.05_train.log`, `eval_lcalib_beta0.05.log`,
   checkpoint `checkpoints/lcalib_beta0.05_run2.pth`, selected epoch 2 on val ECE).
   - Sanity: every other row reproduces the signed T122 numbers exactly.

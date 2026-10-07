@@ -81,6 +81,17 @@ Boundary F1, spill and miss are means over the objects found.
 C5 − raw per-image boundary F1: +0.0950 [+0.0349, +0.1543], over the 24/50 images where both
 find an object. This is bought with far false alarms (36.1% vs 14.7%) and AP (0.6215 → 0.4929).
 
+**β sweep (`eval_lcalib_beta0.log`, `eval_lcalib_beta0.05.log`; one run each):**
+
+| β | band-ECE r=8 | AP | − raw | − temp(1.2251) |
+|---|---|---|---|---|
+| 0 | 0.2267 | 0.6159 | −0.0007 [−0.0126, +0.0146] | +0.0171 [+0.0048, +0.0289] |
+| 0.05 | 0.2409 | 0.5945 | +0.0136 [+0.0016, +0.0279] | +0.0314 [+0.0188, +0.0433] |
+| 1 | 0.2396 | 0.6024 | +0.0123 [+0.0017, +0.0258] | +0.0301 [+0.0196, +0.0397] |
+
+No β beats the temperature, and L_calib adds nothing over the same fine-tune without it. With
+one run each, the differences between the fine-tunes are not interpreted.
+
 **Threshold sweep (`eval_threshold_sweep.log`).** Methods are matched by the fraction of val pixels
 flagged. The C5 − raw BF1 CI excludes 0 at only 2 of 6 points (0.3%: +0.103 [+0.042, +0.162];
 0.5%: +0.154 [+0.098, +0.208]), where C5's far-FP is 37–51%. Against the pre-registered rule the
