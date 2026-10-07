@@ -4,6 +4,7 @@ import HomePage from './pages/HomePage'
 import DemoPage from './pages/DemoPage'
 import HistoryPage from './pages/HistoryPage'
 import TrainingPage from './pages/TrainingPage'
+import ExplainabilityPage from './pages/ExplainabilityPage'
 
 export default function App() {
   return (
@@ -11,6 +12,7 @@ export default function App() {
       <Route element={<Shell />}>
         <Route path="/" element={<HomePage />} />
         <Route path="/demo" element={<DemoPage />} />
+        <Route path="/explainability" element={<ExplainabilityPage />} />
         <Route path="/runs" element={<HistoryPage />} />
         <Route path="/training" element={<TrainingPage />} />
       </Route>

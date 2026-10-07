@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TwinGuard Design Decisions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Courier+Prime:wght@400;700&family=IBM+Plex+Sans:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column; the plan-vs-outcome ledger is the centrepiece, then the decision trail in run order. Same identity as the TwinGuard demo site. */
+:root{
+  --bg:#F7F7F5; --surface:#FFFFFF; --surface-2:#EDEDEA;
+  --ink:#0A0A0A; --ink-dim:#55554F; --ink-faint:#8E8D86; --line:#0A0A0A;
+  --accent:#3D5AFE; --accent-soft:#DCE1FF;
+  --done:#1C8C55; --done-soft:#DDF2E6; --changed:#A86400; --changed-soft:#FBEBD2; --dropped:#6B6B66; --dropped-soft:#E6E6E2;
+  --display:'Archivo Black', 'Arial Black', Impact, sans-serif;
+  --body:'IBM Plex Sans', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --mono:'Courier Prime', 'Courier New', Courier, monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#111215; --surface:#191A1F; --surface-2:#24252B;
+  --ink:#ECECE8; --ink-dim:#B3B3AC; --ink-faint:#85857F; --line:#ECECE8;
+  --accent:#8EA0FF; --accent-soft:#262C52;
+  --done:#5FD39A; --done-soft:#17352A; --changed:#F0B45A; --changed-soft:#3A2C16; --dropped:#A8A8A1; --dropped-soft:#2A2A2E;
+  color-scheme:dark; } }
+:root[data-theme="dark"]{
+  --bg:#111215; --surface:#191A1F; --surface-2:#24252B;
+  --ink:#ECECE8; --ink-dim:#B3B3AC; --ink-faint:#85857F; --line:#ECECE8;
+  --accent:#8EA0FF; --accent-soft:#262C52;
+  --done:#5FD39A; --done-soft:#17352A; --changed:#F0B45A; --changed-soft:#3A2C16; --dropped:#A8A8A1; --dropped-soft:#2A2A2E;
+  color-scheme:dark; }
+
+*{ box-sizing:border-box; }
+html{ -webkit-text-size-adjust:100%; }
+body{ margin:0; background:var(--bg); color:var(--ink); font:16px/1.6 var(--body); }
+.wrap{ max-width:1080px; margin:0 auto; padding-inline:20px; padding-block:40px 64px; }
+h1,h2,h3{ font-family:var(--display); text-transform:uppercase; letter-spacing:-0.01em; text-wrap:balance; line-height:1.15; margin:0; }
+h1{ font-size:clamp(28px, 5vw, 44px); }
+h2{ font-size:clamp(20px, 3vw, 26px); margin-bottom:14px; }
+h3{ font-size:16px; letter-spacing:0; }
+p{ margin:0; max-width:68ch; }
+.mono{ font-family:var(--mono); }
+.eyebrow{ font-family:var(--mono); font-weight:700; font-size:12px; letter-spacing:0.12em; text-transform:uppercase; color:var(--accent); }
+section{ margin-top:56px; display:flex; flex-direction:column; gap:16px; }
+a{ color:var(--accent); }
+:focus-visible{ outline:3px solid var(--accent); outline-offset:2px; }
+
+/* header */
+header{ display:flex; flex-direction:column; gap:14px; border-bottom:3px solid var(--line); padding-bottom:28px; }
+.lede{ font-size:18px; color:var(--ink-dim); }
+.meta{ font-family:var(--mono); font-size:13px; color:var(--ink-faint); }
+
+/* tally */
+.tally{ display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:12px; }
+@media (max-width:720px){ .tally{ grid-template-columns:repeat(2, minmax(0,1fr)); } }
+.tile{ border:2px solid var(--line); background:var(--surface); padding:14px 16px; box-shadow:3px 3px 0 var(--line); }
+.tile .n{ font-family:var(--display); font-size:34px; line-height:1; font-variant-numeric:tabular-nums; }
+.tile .l{ font-family:var(--mono); font-size:12px; letter-spacing:0.06em; text-transform:uppercase; color:var(--ink-dim); margin-top:6px; }
+.tile.done .n{ color:var(--done); } .tile.changed .n{ color:var(--changed); } .tile.dropped .n{ color:var(--dropped); } .tile.extra .n{ color:var(--accent); }
+
+/* principles */
+.rules{ display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:12px; }
+@media (max-width:820px){ .rules{ grid-template-columns:1fr; } }
+.rule{ border-top:3px solid var(--accent); background:var(--surface); padding:14px 16px; }
+.rule h3{ margin-bottom:6px; }
+.rule p{ font-size:14.5px; color:var(--ink-dim); }
+
+/* ledger table */
+.scroll{ overflow-x:auto; border:2px solid var(--line); background:var(--surface); box-shadow:4px 4px 0 var(--line); }
+table{ border-collapse:collapse; width:100%; min-width:880px; font-size:14px; }
+th{ font-family:var(--mono); font-size:11.5px; letter-spacing:0.08em; text-transform:uppercase; text-align:left; background:var(--surface-2); padding:10px 12px; border-bottom:2px solid var(--line); position:sticky; top:0; }
+td{ padding:12px; vertical-align:top; border-bottom:1px solid var(--surface-2); line-height:1.5; }
+td.num{ font-family:var(--mono); color:var(--ink-faint); width:34px; }
+td.plan{ font-weight:600; width:20%; }
+td.why{ color:var(--ink-dim); }
+tr:last-child td{ border-bottom:none; }
+.pill{ display:inline-block; font-family:var(--mono); font-weight:700; font-size:11.5px; letter-spacing:0.04em; text-transform:uppercase; padding:3px 8px; border:1.5px solid currentColor; white-space:nowrap; }
+.pill.done{ color:var(--done); background:var(--done-soft); }
+.pill.changed{ color:var(--changed); background:var(--changed-soft); }
+.pill.dropped{ color:var(--dropped); background:var(--dropped-soft); }
+.pill.extra{ color:var(--accent); background:var(--accent-soft); }
+.fig{ font-family:var(--mono); font-size:13px; white-space:nowrap; }
+
+/* decision trail */
+.trail{ display:flex; flex-direction:column; gap:0; border-left:3px solid var(--line); margin-left:12px; }
+.step{ position:relative; padding:0 0 26px 26px; display:flex; flex-direction:column; gap:8px; }
+.step::before{ content:attr(data-n); position:absolute; left:-15px; top:0; width:27px; height:27px; background:var(--accent); color:var(--surface); font-family:var(--mono); font-weight:700; font-size:13px; display:grid; place-items:center; }
+.step h3{ font-size:17px; padding-top:2px; }
+.kv{ display:grid; grid-template-columns:130px minmax(0,1fr); gap:4px 14px; font-size:15px; max-width:80ch; }
+@media (max-width:560px){ .kv{ grid-template-columns:1fr; } .kv dt{ margin-top:6px; } }
+.kv dt{ font-family:var(--mono); font-size:12px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:var(--ink-faint); padding-top:3px; }
+.kv dd{ margin:0; }
+
+/* explainability */
+.xgrid{ display:grid; grid-template-columns:repeat(auto-fit, minmax(240px,1fr)); gap:14px; }
+.xcard{ border:2px solid var(--line); background:var(--surface); padding:16px; display:flex; flex-direction:column; gap:8px; min-width:0; }
+.xcard .tag{ font-family:var(--mono); font-weight:700; font-size:12px; background:var(--accent); color:var(--surface); padding:2px 7px; align-self:flex-start; }
+.xcard .big{ font-family:var(--display); font-size:24px; font-variant-numeric:tabular-nums; }
+.xcard p{ font-size:14.5px; color:var(--ink-dim); }
+.callout{ border:2px solid var(--accent); background:var(--accent-soft); padding:18px 20px; font-size:16px; }
+.callout strong{ font-family:var(--display); text-transform:uppercase; letter-spacing:0; font-weight:400; display:block; margin-bottom:6px; font-size:15px; }
+
+/* bars */
+.bars{ display:flex; flex-direction:column; gap:8px; max-width:640px; }
+.bar{ display:grid; grid-template-columns:170px minmax(0,1fr) 52px; align-items:center; gap:10px; font-size:14px; }
+@media (max-width:520px){ .bar{ grid-template-columns:110px minmax(0,1fr) 46px; font-size:13px; } }
+.track{ height:14px; background:var(--surface-2); }
+.track span{ display:block; height:100%; background:var(--ink); }
+.bar.real .track span{ background:var(--accent); }
+.bar .v{ font-family:var(--mono); text-align:right; font-variant-numeric:tabular-nums; }
+
+footer{ margin-top:64px; padding-top:18px; border-top:3px solid var(--line); font-family:var(--mono); font-size:13px; color:var(--ink-faint); display:flex; flex-wrap:wrap; gap:8px 24px; }
+@media (prefers-reduced-motion: no-preference){ .tile, .xcard{ transition:transform .15s ease; } .tile:hover{ transform:translate(-2px,-2px); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">TwinGuard · project notes · October 2026</div>
+  <h1>From the plan to the final system</h1>
+  <p class="lede">The Phase-1 deck listed fifteen things to build. This page goes through each one: what it became, why that version was chosen, and the measurement behind the choice. It ends with the explainability study, which explains most of the other decisions.</p>
+  <p class="meta">Model: model_3head_best.pth (frozen SegFormer-B5, 3 OOD heads, 2000-object bank) · Test set: Fishyscapes Lost &amp; Found, held-out 50-image half · Every number is from a run log in the repo.</p>
+</header>
+
+<section aria-labelledby="tally-h">
+  <h2 id="tally-h" class="eyebrow" style="font-family:var(--mono);font-size:12px">Where the 15 deck items landed</h2>
+  <div class="tally">
+    <div class="tile done"><div class="n">9</div><div class="l">Done as planned</div></div>
+    <div class="tile changed"><div class="n">4</div><div class="l">Changed by evidence</div></div>
+    <div class="tile dropped"><div class="n">2</div><div class="l">Not pursued, with reasons</div></div>
+    <div class="tile extra"><div class="n">5</div><div class="l">Added beyond the deck</div></div>
+  </div>
+</section>
+
+<section aria-labelledby="rules-h">
+  <h2 id="rules-h">How each choice was made</h2>
+  <div class="rules">
+    <div class="rule"><h3>Rule first, run second</h3><p>Before each experiment, its pass or fail condition was written into the plan. When a result failed its rule, it was reported as a failure.</p></div>
+    <div class="rule"><h3>Fit on val, report on test</h3><p>The 100 public Fishyscapes images are split 50/50. Every threshold, temperature and calibrator is fitted on the first half and scored on the second.</p></div>
+    <div class="rule"><h3>Every number has a log</h3><p>Results are copied from the run logs, with paired bootstrap 95% intervals over images (20-frame blocks on video). Nothing on the site or in the thesis is typed in by hand.</p></div>
+  </div>
+</section>
+
+<section aria-labelledby="ledger-h">
+  <h2 id="ledger-h">Plan vs final system</h2>
+  <p>The first two columns follow the status table from the review. The last column gives the reason each final version is the right one for this project.</p>
+  <div class="scroll" tabindex="0" aria-label="Plan versus final system table">
+    <table>
+      <thead><tr><th>#</th><th>In the deck</th><th>Final version</th><th>Status</th><th>Why this version</th></tr></thead>
+      <tbody>
+        <tr><td class="num">1</td><td class="plan">Frozen SegFormer-B5 encoder, 3 OOD heads (seeds 42/123/7)</td><td>Built as planned; training refuses to start unless the encoder is frozen and the heads are independent.</td><td><span class="pill done">Done</span></td><td class="why">Freezing keeps the Cityscapes knowledge intact and makes training cheap. Three heads on one encoder give a disagreement signal in a single pass.</td></tr>
+        <tr><td class="num">2</td><td class="plan">Fix the head collapse</td><td>Stable loss with a positive-class weight of 20; realistic paste sizes (0.012–0.20), placed only on road or sidewalk, colour-matched.</td><td><span class="pill done">Done</span></td><td class="why">Each paste setting fixes a measured mismatch with real Lost &amp; Found objects (uniform placement put two thirds of objects on walls or sky). Result: AUROC <span class="fig">0.9920</span>, AP <span class="fig">0.6215</span>.</td></tr>
+        <tr><td class="num">3</td><td class="plan">Training pipeline with MLflow</td><td>8 epochs, checkpoint chosen on val AP, test reported once.</td><td><span class="pill done">Done</span></td><td class="why">Val AP peaked at epoch 4 (<span class="fig">0.6839</span>) and fell after, so the deck's 15 epochs would have added training time without a better checkpoint.</td></tr>
+        <tr><td class="num">4</td><td class="plan">300–500 distinct CARLA objects</td><td>45 CARLA objects (500 bank entries) plus 1500 COCO cutouts: a 2000-object bank.</td><td><span class="pill changed">Changed</span></td><td class="why">The same-photo test (X5) showed objects the model trained on and objects it never saw score the same (<span class="fig">0.927</span> vs <span class="fig">0.939</span>). Object variety is not the bottleneck. A mask audit also found the old capture script saved misaligned masks for 15–21 of the 45 objects, so more renders from it would have added label noise.</td></tr>
+        <tr><td class="num">5</td><td class="plan">Experiment A baseline (MSP)</td><td>Same split and metric code as TwinGuard.</td><td><span class="pill done">Done</span></td><td class="why">A baseline only means something if it is scored identically. It also turned out to matter on RoadAnomaly21 (item 11).</td></tr>
+        <tr><td class="num">6</td><td class="plan">L_calib soft-ECE loss, β sweep</td><td>Run at β = 0, 0.05 and 1, plus a β = 50 attempt.</td><td><span class="pill done">Done</span></td><td class="why">No weight beats a single temperature (edge ECE <span class="fig">0.2267 / 0.2409 / 0.2396</span> vs <span class="fig">0.2095</span>). The calibration term is about 0.0005 against a loss of about 0.08, under 1% of the objective, so the weight cannot make it matter. β = 0 already equals the raw model.</td></tr>
+        <tr><td class="num">7</td><td class="plan">Temperature-scaling ablation</td><td>Whole-image T, edge T, 50/50 T, a disagreement-based T and a neighbourhood calibrator, all with bootstrap CIs.</td><td><span class="pill done">Done</span></td><td class="why">One temperature was not enough to answer the question, so four more calibrators were compared under the same rules. This became the main result (next section).</td></tr>
+        <tr><td class="num">8</td><td class="plan">Dual mode: cheap pass, MC-Dropout when triggered, under 100 ms</td><td>Single-pass latency measured instead: <span class="fig">92.1 ms</span> forward, <span class="fig">176 ms</span> end to end, 0.91 GB.</td><td><span class="pill changed">Changed</span></td><td class="why">The three heads already give the uncertainty in one pass (AUROC 0.985, against 0.968 for MC-Dropout with 10 extra passes, on the lead's COCO checkpoint). No trigger reached its target there (best: fires on 20% of normal frames, catches 47.5% of anomalous ones). The single pass already meets the 100 ms goal on a laptop GPU.</td></tr>
+        <tr><td class="num">9</td><td class="plan">UBQ metric, validated in CARLA then on real data</td><td>Per-object outline metric (objects found, boundary F1, spill, miss, far false positives) plus edge-band ECE at 4/8/16 px; validated against sklearn, then measured on Fishyscapes. Threshold sweep added.</td><td><span class="pill changed">Changed</span></td><td class="why">The original UBQ takes the single worst distance in the frame, so one far false alarm decides it: it read about 1152 px for every method and could not tell them apart. The CARLA reference masks were partly misaligned, and CARLA has no validation split, so CARLA outline numbers stay descriptive.</td></tr>
+        <tr><td class="num">10</td><td class="plan">Continuous CARLA capture and live playback</td><td>A recorded 400-frame Town02 route with world-anchored pastes, rendered to video and evaluated with block-bootstrap CIs.</td><td><span class="pill changed">Changed</span></td><td class="why">Live playback would run CARLA at Epic quality and the model on one laptop GPU at a few frames per second, and a live run cannot be repeated exactly. A recording gives the same footage for every measurement. The Low-quality pilot also produced skyline false alarms (AUROC 0.787), so Epic quality was needed.</td></tr>
+        <tr><td class="num">11</td><td class="plan">RoadAnomaly21</td><td>Evaluated on its 10 labelled images, nothing fitted on them.</td><td><span class="pill done">Done</span></td><td class="why">A second real dataset was needed. Result: TwinGuard AP <span class="fig">0.308</span> vs MSP <span class="fig">0.474</span>. Its anomalies are large and close (15% of pixels vs 0.28%), which paste-trained heads do not handle. Reported as a limitation.</td></tr>
+        <tr><td class="num">12</td><td class="plan">OoDIS instance conversion</td><td>Not run (agreed 5 Oct).</td><td><span class="pill dropped">Not pursued</span></td><td class="why">OoDIS grades object instances while TwinGuard outputs pixels, so the score would mostly grade an added grouping step. Its labels sit behind a submission server, so our intervals could not be computed. RoadAnomaly21, from the same benchmark family, already answers the second-dataset question.</td></tr>
+        <tr><td class="num">13</td><td class="plan">DUDES comparison</td><td>Not run.</td><td><span class="pill dropped">Not pursued</span></td><td class="why">DUDES distils ensemble uncertainty into one network, which is a different question from edge calibration. Its published numbers use a different split, and a reimplementation here would be easy to dispute.</td></tr>
+        <tr><td class="num">14</td><td class="plan">FastAPI + React demo</td><td>Five pages, plus live inference on any uploaded image or video with measured timings. Docker left out.</td><td><span class="pill done">Done</span></td><td class="why">Uploads use the exact scoring path of the evaluation, so the demo and the results cannot disagree. Docker solves multi-machine deployment, which a single-laptop research demo does not need.</td></tr>
+        <tr><td class="num">15</td><td class="plan">Diagnostics and infrastructure</td><td>Preflight checks, metric validation against sklearn, collapse and data checks, RunPod scripts.</td><td><span class="pill done">Done</span></td><td class="why">These caught real problems early, including the mis-fitted temperature described below.</td></tr>
+        <tr><td class="num">+</td><td class="plan">Not in the deck</td><td>Explainability X1–X5, full-resolution test, threshold sweep, paper tables, thesis.</td><td><span class="pill extra">Added</span></td><td class="why">The calibration results raised a "why" that only these tests could answer.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section aria-labelledby="trail-h">
+  <h2 id="trail-h">The decision trail</h2>
+  <p>The order matters here: each step was chosen because of what the previous one found.</p>
+  <div class="trail">
+    <div class="step" data-n="1">
+      <h3>Measure calibration where it matters</h3>
+      <dl class="kv">
+        <dt>Found</dt><dd>Whole-image ECE is <span class="fig">0.0004</span>, which looks excellent. Inside an 8-pixel band around object outlines it is <span class="fig">0.2273</span>, and those edges are under-confident at every radius.</dd>
+        <dt>Why</dt><dd>Only 0.28% of pixels are anomalous, so the whole-image number is almost entirely easy background.</dd>
+        <dt>Chosen</dt><dd>Edge-band ECE at 4, 8 and 16 px as the calibration measure, reported next to whole-image ECE.</dd>
+      </dl>
+    </div>
+    <div class="step" data-n="2">
+      <h3>Get the baseline temperature right</h3>
+      <dl class="kv">
+        <dt>Found</dt><dd>The first temperature, <span class="fig">1.71</span>, had been fitted with the weighted training loss and never converged. Refitting with plain log-likelihood gives <span class="fig">1.2251</span>.</dd>
+        <dt>Chosen</dt><dd>T = 1.2251, with every dependent number recomputed. The conclusions held, and the gap between image and edges grew.</dd>
+      </dl>
+    </div>
+    <div class="step" data-n="3">
+      <h3>Try every reasonable calibrator under the same rules</h3>
+      <dl class="kv">
+        <dt>Found</dt><dd>The image wants T = 1.2251 and the edges want T = 4.3592; one temperature cannot serve both. A disagreement-based temperature is no better than a single one. The neighbourhood calibrator fixes edge ECE (<span class="fig">0.0738</span>) but drops AP to <span class="fig">0.4929</span>, and its outline gain holds at only 2 of 6 thresholds. The calibration loss never beats the temperature at any weight.</dd>
+        <dt>Chosen</dt><dd>Report the analysis as the contribution, not a new calibration method. Every method failed at least one of its own rules.</dd>
+      </dl>
+    </div>
+    <div class="step" data-n="4">
+      <h3>Test outside the benchmark</h3>
+      <dl class="kv">
+        <dt>Found</dt><dd>On the pasted CARLA route, edges are <em>over</em>-confident, and the calibration loss helps there. On RoadAnomaly21, TwinGuard falls below MSP.</dd>
+        <dt>Chosen</dt><dd>Keep both as results: one explains the calibration loss, the other marks the model's limit.</dd>
+      </dl>
+    </div>
+    <div class="step" data-n="5">
+      <h3>Ask why: explainability</h3>
+      <dl class="kv">
+        <dt>Question</dt><dd>Why do pasted edges and real edges go in opposite directions?</dd>
+        <dt>Chosen</dt><dd>Five evaluation-only tests, each checked against a removal or a control before being trusted. Results below.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="x-h">
+  <h2 id="x-h">Explainability results</h2>
+  <div class="xgrid">
+    <div class="xcard"><span class="tag">X1 · remove it</span><div class="big">0.347 → 0.091</div><p>Inpainting a real object away cuts its score. Removing only its edges or interior raises the score instead, because the repaint itself gets flagged. This is a lower bound.</p></div>
+    <div class="xcard"><span class="tag">X1b · remove it exactly</span><div class="big">0.951 → 0.016</div><p>On the CARLA route the clean frame is a perfect removal. Inpainting the same spot leaves 0.625, so the fill adds +0.609 [+0.538, +0.681] on its own.</p></div>
+    <div class="xcard"><span class="tag">X5 · same photo</span><div class="big">0.94 vs 0.35</div><p>Pasted objects in real photos score near 1 with over-confident edges; real objects in the same photos score 0.35 with under-confident edges. Edge gap +0.468 [+0.401, +0.532]. Objects seen in training score the same as unseen ones (−0.011): the model reacts to pasting, not to the object.</p></div>
+    <div class="xcard"><span class="tag">X2 · which stage</span><div class="big">25% agreement</div><p>On real objects the gradient map matches the removal test only at chance. It points at the coarsest stage, but removing evidence shows real detections rely on the middle stages. On pastes the agreement is 56% and passes.</p></div>
+    <div class="xcard"><span class="tag">X3 · kind of uncertainty</span><div class="big">0.236 vs 0.010</div><p>At object edges almost all uncertainty is shared ambiguity, not disagreement between heads. Disagreement shows where edges are, not which side is wrong.</p></div>
+  </div>
+
+  <h3 style="margin-top:8px">Score drop when one encoder stage is removed (real objects, n = 24)</h3>
+  <div class="bars" role="img" aria-label="Score drop by stage: stage 1 28%, stage 2 52%, stage 3 74%, stage 4 28%">
+    <div class="bar real"><span>Stage 1 · 1/4 res</span><div class="track"><span style="width:27.8%"></span></div><span class="v">28%</span></div>
+    <div class="bar real"><span>Stage 2 · 1/8 res</span><div class="track"><span style="width:51.7%"></span></div><span class="v">52%</span></div>
+    <div class="bar real"><span>Stage 3 · 1/16 res</span><div class="track"><span style="width:74.4%"></span></div><span class="v">74%</span></div>
+    <div class="bar real"><span>Stage 4 · 1/32 res</span><div class="track"><span style="width:28.2%"></span></div><span class="v">28%</span></div>
+  </div>
+
+  <div class="callout">
+    <strong>What it adds up to</strong>
+    The model has learned what a pasted object looks like. That is why calibration learned on pastes moves real edges the wrong way, why more pasted CARLA objects would not help (item 4), and why the next real improvement has to come from more realistic training anomalies, not from tuning the calibrator.
+  </div>
+</section>
+
+<section aria-labelledby="open-h">
+  <h2 id="open-h">Still open</h2>
+  <p>Two checks remain before the thesis numbers are final: a visual review of the CARLA mask audit, which fixes the exact count of misaligned objects (currently 15 to 21 of 45), and confirming that the local COCO bank is the copy used in training, which turns the "no memorisation" result from provisional to firm.</p>
+</section>
+
+<footer>
+  <span>TwinGuard · 7th semester project</span>
+  <span>Sources: eval_fishyscapes_T122.log, eval_lcalib_beta0*.log, eval_threshold_sweep.log, bench_latency.log, paste_test.log, explain_*.log, eval_road_anomaly21.log</span>
+</footer>
+
+</div>
+</body>
+</html>

@@ -506,3 +506,23 @@ h1, h2, .display{ font-family:'Archivo Black', sans-serif; text-transform:upperc
 .live-result{ margin-top:16px; }
 .live-img{ display:block; width:100%; border:2px solid var(--line); }
 .live-stats{ margin-top:14px; }
+
+/* /explainability page */
+.xp-findings{ grid-template-columns:repeat(4, minmax(0, 1fr)); }
+@media (max-width:900px){ .xp-findings{ grid-template-columns:repeat(2, minmax(0, 1fr)); } }
+@media (max-width:520px){ .xp-findings{ grid-template-columns:1fr; } }
+.xp-find-d{ font-size:13px; color:var(--ink-dim); margin-top:6px; line-height:1.45; }
+.xp-tests{ display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:14px; margin-bottom:8px; }
+.xp-test{ border:2px solid var(--line); background:var(--surface); padding:14px; box-shadow:var(--shadow-rest); min-width:0; }
+.xp-test-head{ display:flex; align-items:baseline; gap:8px; margin-bottom:8px; }
+.xp-test-n{ font-size:11px; color:var(--ink-faint); }
+.xp-test-id{ font-size:12px; font-weight:700; background:var(--accent); color:var(--surface); padding:1px 6px; }
+.xp-test-name{ font-weight:700; font-size:15px; }
+.xp-test-q{ font-size:14px; font-weight:700; line-height:1.4; margin-bottom:6px; }
+.xp-test-how{ font-size:13px; color:var(--ink-dim); line-height:1.45; }
+.xp-takeaway{ margin-top:28px; padding-top:30px; }
+.xp-takeaway:hover{ transform:none; }
+/* /demo link to the explainability page */
+.explain-link{ display:flex; flex-direction:column; gap:6px; padding:18px; text-decoration:none; color:inherit; }
+.explain-link-t{ font-size:18px; font-weight:700; color:var(--accent); }
+.explain-link-d{ font-size:13px; color:var(--ink-dim); }

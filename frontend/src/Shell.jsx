@@ -17,6 +17,9 @@ export default function Shell() {
           <NavLink to="/demo" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
             Detection Demo
           </NavLink>
+          <NavLink to="/explainability" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
+            Explainability
+          </NavLink>
           <NavLink to="/runs" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
             Training Runs
           </NavLink>
