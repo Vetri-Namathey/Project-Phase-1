@@ -21,8 +21,8 @@ export default function TrainingPage() {
   return (
     <div className="content">
       <div className="page-head">
-        <div className="stamp">EXHIBIT B</div>
-        <h1 className="headline">Training data — CutMix composites</h1>
+        <div className="stamp">Training data</div>
+        <h1 className="headline">What the heads learned from.</h1>
         <p className="lede">
           8 composites made by the actual training pipeline: Cityscapes frames (validation split, fixed seed) with
           objects from the 2000-object bank — tiles cut from 45 CARLA frames plus COCO cutouts — pasted on road or

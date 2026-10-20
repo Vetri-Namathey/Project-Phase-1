@@ -101,3 +101,6 @@ static_react/
 
 # Separate MLflow DB for runs on this machine's (older) MLflow; mlflow.db came from a newer pod version
 /mlflow_*.db
+
+# Private working notes (not part of the project)
+/DISCUSSION_NOTES.md

@@ -34,6 +34,8 @@ import base64
 import io
 import json
 import os
+import re
+import shutil
 import time
 
 import cv2
@@ -540,6 +542,10 @@ def infer_video_bytes(data, model, device):
 
     out, ostream = None, None
     forward_ms, total_ms, frames_with_box, max_score, kept = [], [], 0, 0.0, 0
+    max_disagreement = 0.0
+    frame_info = []
+    frames_dir = os.path.join(UPLOAD_DIR, name[:-4] + "_frames")  # sampled frames, for /api/explain-frame
+    os.makedirs(frames_dir, exist_ok=True)
     next_pick = 0.0
     for i, frame in enumerate(src.decode(vstream)):
         if i + 1e-6 < next_pick:
@@ -557,13 +563,17 @@ def infer_video_bytes(data, model, device):
             logits = model(tensor)["ood_logits"].float()
         _sync(device)
         forward_ms.append(1000 * (time.perf_counter() - t1))
-        fused = torch.sigmoid(F.interpolate(logits, size=(sh, sw), mode="bilinear",
-                                            align_corners=False)).mean(dim=1).squeeze(0).cpu().numpy()
+        per_head = torch.sigmoid(F.interpolate(logits, size=(sh, sw), mode="bilinear",
+                                               align_corners=False)).squeeze(0).cpu().numpy()
+        fused = per_head.mean(axis=0)
+        disagreement = per_head.std(axis=0)
         out_w = DISPLAY_WIDTH
         out_h = int(sh * DISPLAY_WIDTH / sw) // 2 * 2  # yuv420p needs even sizes
         detection, boxes = draw_detection_box(img.resize((sw, sh), Image.BILINEAR), fused, (out_w, out_h))
         heat = apply_colormap(fused, "inferno", (out_w, out_h))
-        panel = np.concatenate([np.array(detection), np.array(heat)], axis=0)
+        # head disagreement, normalised by this frame's own max (as in infer_bytes)
+        d_map = apply_colormap(disagreement / (float(disagreement.max()) or 1.0), "viridis", (out_w, out_h))
+        panel = np.concatenate([np.array(detection), np.array(heat), np.array(d_map)], axis=0)
         if out is None:
             out = av.open(out_path, mode="w")
             ostream = out.add_stream("libx264", rate=VIDEO_FPS)
@@ -574,7 +584,10 @@ def infer_video_bytes(data, model, device):
             out.mux(packet)
         total_ms.append(1000 * (time.perf_counter() - t0))
         frames_with_box += boxes > 0
+        img.resize((sw, sh), Image.BILINEAR).save(os.path.join(frames_dir, f"{kept:05d}.jpg"), quality=92)
+        frame_info.append({"max": round(float(fused.max()), 4), "boxes": int(boxes)})
         max_score = max(max_score, float(fused.max()))
+        max_disagreement = max(max_disagreement, float(disagreement.max()))
         kept += 1
         if kept >= VIDEO_MAX_FRAMES:
             break
@@ -589,12 +602,17 @@ def infer_video_bytes(data, model, device):
     old = sorted(f for f in os.listdir(UPLOAD_DIR) if f.startswith("upload_") and f.endswith(".mp4"))
     for f in old[:-UPLOADS_KEPT]:
         os.remove(os.path.join(UPLOAD_DIR, f))
+        shutil.rmtree(os.path.join(UPLOAD_DIR, f[:-4] + "_frames"), ignore_errors=True)
 
     return {
         "url": f"/static/generated/uploads/{name}",
+        "clip": name[:-4],
+        "frame_info": frame_info,
+        "first_detection": next((i for i, fi in enumerate(frame_info) if fi["boxes"] > 0), None),
         "frames": kept, "fps": VIDEO_FPS, "source_fps": round(src_fps, 2),
         "truncated": kept >= VIDEO_MAX_FRAMES,
         "frames_with_box": int(frames_with_box), "max_score": max_score,
+        "max_disagreement": round(max_disagreement, 4),
         "threshold": BOX_THRESHOLD,
         "ms_per_frame": {"model_forward": round(float(np.median(forward_ms)), 1),
                          "total": round(float(np.median(total_ms)), 1)},
@@ -618,6 +636,37 @@ async def infer_video(request: Request):
         raise
     except Exception as e:  # av raises its own error types for unreadable files
         raise HTTPException(415, f"could not read this video ({type(e).__name__}); try an MP4")
+
+
+# --- Label-free explanation of one image or one frame of an uploaded video ---
+# explain_live.py: removal test, stage ablation, uncertainty split, calibration shift.
+# The text is built from the measured numbers; no language model is involved.
+@app.post("/api/explain-image")
+async def explain_image_endpoint(request: Request):
+    from starlette.concurrency import run_in_threadpool
+    from explain_live import explain_image
+    data = await request.body()
+    if not data or len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(400, "send an image file (up to 15 MB) as the request body")
+    try:
+        image = Image.open(io.BytesIO(data)).convert("RGB")
+    except Exception:
+        raise HTTPException(415, "not a readable image (use JPG or PNG)")
+    model, device = _get_live_model()
+    return await run_in_threadpool(explain_image, model, device, image)
+
+
+@app.post("/api/explain-frame")
+async def explain_frame_endpoint(clip: str, frame: int):
+    from starlette.concurrency import run_in_threadpool
+    from explain_live import explain_image
+    if not re.fullmatch(r"upload_\d+", clip):
+        raise HTTPException(400, "bad clip id")
+    path = os.path.join(UPLOAD_DIR, clip + "_frames", f"{max(frame, 0):05d}.jpg")
+    if not os.path.exists(path):
+        raise HTTPException(404, "that frame is no longer on the server (only the newest uploads are kept)")
+    model, device = _get_live_model()
+    return await run_in_threadpool(explain_image, model, device, Image.open(path).convert("RGB"))
 
 
 @app.get("/")

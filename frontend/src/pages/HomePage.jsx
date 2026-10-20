@@ -1,76 +1,35 @@
 import { Link } from 'react-router-dom'
 import { useEffect, useRef, useState } from 'react'
+import Reveal from '../components/Reveal'
 
-// train.log, selected epoch 4, Fishyscapes test half. AP first: AUROC is
+// train.log, selected epoch 4, Fishyscapes Lost&Found test half. AP first: AUROC is
 // saturated near 0.99, and Fishyscapes ranks on AP.
 const METRICS = [
-  { k: 'TEST AP', v: 0.6218, decimals: 4 },
-  { k: 'TEST AUROC', v: 0.9920, decimals: 4 },
-  { k: 'FPR@95', v: 0.0287, decimals: 4 },
-  { k: 'PRE-CALIB GATE', v: 0.75, decimals: 2 },
-  { k: 'POST-CALIB TARGET', v: 0.83, decimals: 2 },
+  { k: 'Average precision', sub: 'ranks anomalies above normal pixels', v: 0.6218, decimals: 4 },
+  { k: 'AUROC', sub: 'saturated near its ceiling', v: 0.9920, decimals: 4 },
+  { k: 'FPR @ 95% recall', sub: 'normal pixels wrongly flagged', v: 0.0287, decimals: 4 },
 ]
 
-const FEATURES = [
+// eval_fishyscapes_T122.log: raw score, Fishyscapes test half. Band = within 8 px of object outlines.
+const ECE_WHOLE = 0.0004
+const ECE_EDGE = 0.2273
+const ECE_SCALE_MAX = 0.25
+
+const STEPS = [
   {
     n: '01',
-    t: 'Frozen encoder, 3 independent heads',
-    d: 'A SegFormer backbone stays frozen while three separately-seeded OOD heads each learn to score "does this pixel look like something I was never trained on."',
+    t: 'A frozen encoder, three independent heads',
+    d: 'A SegFormer-B5 backbone stays frozen while three separately seeded heads each learn to score how unfamiliar a pixel looks.',
   },
   {
     n: '02',
-    t: 'CutMix outlier exposure',
-    d: 'CARLA-rendered props and filtered COCO cutouts are pasted onto real Cityscapes frames during training, teaching the heads what an anomaly looks like without ever seeing a real one.',
+    t: 'Trained on pasted anomalies',
+    d: 'CARLA props and filtered COCO cutouts are pasted onto Cityscapes road scenes, so the heads learn what "out of place" looks like without a single real anomaly label.',
   },
   {
     n: '03',
     t: 'Disagreement as uncertainty',
-    d: 'The three heads rarely agree on genuinely novel objects. That spread — not a single confidence score — is the signal a downstream system can actually trust.',
-  },
-]
-
-// Every number from eval_fishyscapes_T122.log (model_3head_best.pth /
-// model_3head_calib_best.pth, Fishyscapes test half, input scale 1; every
-// calibrator fit on the val half only). The temperature row uses the plain-NLL
-// refit T=1.2251; the earlier whole-image T was mis-fitted (MISTAKES.md M1).
-// bece = ECE restricted to pixels within 8px of a true anomaly edge.
-// Whole-image ECE is shown at 4 dp; temp(whole) is 0.00012 at 5 dp
-// (calibrate_compare_T122.log).
-const CALIB_MODELS = [
-  {
-    id: 'raw',
-    label: 'Raw',
-    sub: 'Sigmoid, no calibration',
-    auroc: 0.9920, ap: 0.6215, ece: 0.0004, bece: 0.2273,
-    note: 'Near-perfect whole-image ECE (0.0004) hides a boundary ECE of 0.2273. With well under 1% of pixels anomalous, whole-image ECE is dominated by easy background. At object edges the model is under-confident: true-anomaly edge pixels average a score of 0.36.',
-  },
-  {
-    id: 'temp',
-    label: 'T = 1.2251',
-    sub: 'Temperature fit on the whole image (plain NLL)',
-    auroc: 0.9924, ap: 0.6206, ece: 0.0001, bece: 0.2095,
-    note: 'Standard temperature scaling, fit by plain NLL on held-out real images. It calibrates the whole image (ECE 0.00012) but barely moves the edges: 0.2273 to 0.2095. One global temperature is tuned to the background pixels that make up almost all of the image.',
-  },
-  {
-    id: 'mixed',
-    label: 'T = 3.15',
-    sub: 'Temperature fit 50/50 on whole image + boundary',
-    auroc: 0.9925, ap: 0.6177, ece: 0.0177, bece: 0.1277,
-    note: 'The compromise point. A version that varied T with head disagreement did no better than this single temperature (tested against a pre-registered control). Disagreement marks where the edges are, but not which way to correct them.',
-  },
-  {
-    id: 'band',
-    label: 'T = 4.36',
-    sub: 'Temperature fit on boundary pixels only',
-    auroc: 0.9925, ap: 0.6173, ece: 0.0420, bece: 0.0942,
-    note: 'Cuts boundary ECE from 0.2095 (T = 1.2251) to 0.0942, but whole-image ECE rises from 0.0001 to 0.0420. The whole image wants T ≈ 1.2 and the edges want T ≈ 4.4, fitted on the same objective. No single temperature fixes both. That trade-off is the finding.',
-  },
-  {
-    id: 'calib',
-    label: 'L_calib',
-    sub: 'Joint fine-tune on CutMix pastes, soft-ECE surrogate',
-    auroc: 0.9924, ap: 0.6024, ece: 0.0005, bece: 0.2396,
-    note: 'Calibration learned from training pastes transfers the wrong correction. It lowers edge scores. On real Fishyscapes, where edges are under-confident, that is worse than raw and worse than temperature scaling (CIs exclude 0). On a pasted CARLA driving route, where edges are over-confident, it beats raw but is no better than the same whole-image temperature. Calibration has to be fit on held-out real data.',
+    d: 'The final score is the mean of the three heads. How much they disagree comes free from the same pass and is shown for the images and videos you upload.',
   },
 ]
 
@@ -94,14 +53,13 @@ function useOnScreen(ref) {
   return visible
 }
 
-function CountUpStat({ k, v, decimals }) {
+function CountUpMetric({ k, sub, v, decimals }) {
   const ref = useRef(null)
   const visible = useOnScreen(ref)
   const [display, setDisplay] = useState(0)
-
   useEffect(() => {
     if (!visible) return
-    const duration = 900
+    const duration = 1100
     const start = performance.now()
     let raf
     const tick = (now) => {
@@ -113,258 +71,133 @@ function CountUpStat({ k, v, decimals }) {
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
   }, [visible, v])
-
   return (
-    <div className="proof-stat" ref={ref}>
-      <div className="k mono">{k}</div>
-      <div className="v mono">{display.toFixed(decimals)}</div>
+    <div className="metric" ref={ref}>
+      <div className="v mono grad-text">{display.toFixed(decimals)}</div>
+      <div className="k"><b>{k}</b> · {sub}</div>
     </div>
   )
 }
 
-function PulseGrid() {
-  const ROWS = 4
-  const COLS = 9
-  const [cells, setCells] = useState(() => Array(ROWS * COLS).fill(0))
-
+// One real, pre-computed test frame from the backend (the same data the demo uses).
+function useHeroFrame() {
+  const [frame, setFrame] = useState(null)
   useEffect(() => {
-    const id = setInterval(() => {
-      setCells((prev) => {
-        const next = prev.map((c) => Math.max(0, c - 0.12))
-        // simulate a single head disagreeing on one "novel object" pixel at a time
-        const idx = Math.floor(Math.random() * next.length)
-        next[idx] = 0.5 + Math.random() * 0.4
-        return next
-      })
-    }, 900)
-    return () => clearInterval(id)
+    let cancelled = false
+    fetch('/api/manifest')
+      .then(r => (r.ok ? r.json() : Promise.reject()))
+      .then(m => { if (!cancelled && m.length) setFrame(m[0]) })
+      .catch(() => {})
+    return () => { cancelled = true }
   }, [])
-
-  return (
-    <div className="pulse-grid" style={{ gridTemplateColumns: `repeat(${COLS}, 1fr)` }} aria-hidden="true">
-      {cells.map((intensity, i) => (
-        <div
-          key={i}
-          className="pulse-cell"
-          style={{
-            background: intensity > 0.05
-              ? `rgba(61,90,254,${intensity.toFixed(2)})`
-              : 'transparent',
-          }}
-        />
-      ))}
-    </div>
-  )
-}
-
-function CalibrationPanel() {
-  const [active, setActive] = useState('band')
-  const model = CALIB_MODELS.find((m) => m.id === active)
-  const raw = CALIB_MODELS[0]
-
-  const rows = [
-    { label: 'AP', key: 'ap', decimals: 4, higherBetter: true },
-    { label: 'AUROC', key: 'auroc', decimals: 4, higherBetter: true },
-    { label: 'ECE (whole image)', key: 'ece', decimals: 4, higherBetter: false },
-    { label: 'ECE (object edges, r=8)', key: 'bece', decimals: 4, higherBetter: false },
-  ]
-
-  return (
-    <section className="calib-block">
-      <div className="stage-head">
-        <h2>Calibration — the edges tell a different story</h2>
-        <p>Fishyscapes test half, verified AUROC=0.9920 checkpoint. Every calibrator is fit on held-out real images. Pick one to compare against raw.</p>
-      </div>
-
-      <div className="calib-tabs" role="tablist">
-        {CALIB_MODELS.map((m) => (
-          <button
-            key={m.id}
-            role="tab"
-            aria-selected={active === m.id}
-            className={`calib-tab${active === m.id ? ' active' : ''}`}
-            onClick={() => setActive(m.id)}
-          >
-            {m.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="calib-body">
-        <div className="calib-sub mono">{model.sub}</div>
-        <table className="calib-table">
-          <thead>
-            <tr>
-              <th>Metric</th>
-              <th>Raw</th>
-              <th>{model.label}</th>
-              <th>Δ</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => {
-              const rawV = raw[r.key]
-              const curV = model[r.key]
-              const delta = curV - rawV
-              const isSame = active === 'raw'
-              const improved = r.higherBetter ? delta > 0.00005 : delta < -0.00005
-              const worsened = r.higherBetter ? delta < -0.00005 : delta > 0.00005
-              return (
-                <tr key={r.key}>
-                  <td className="mono">{r.label}</td>
-                  <td className="mono">{rawV.toFixed(r.decimals)}</td>
-                  <td className="mono">{curV.toFixed(r.decimals)}</td>
-                  <td className={`mono delta${isSame ? '' : improved ? ' delta-good' : worsened ? ' delta-bad' : ''}`}>
-                    {isSame ? '—' : `${delta >= 0 ? '+' : ''}${delta.toFixed(r.decimals)}`}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-        <p className="calib-note">{model.note}</p>
-      </div>
-    </section>
-  )
-}
-
-// Every number from eval_road_anomaly21.log (model_3head_best.pth, scale 1, the 10
-// RoadAnomaly21 validation images with public labels; nothing fitted on them).
-const RA21 = {
-  twinguard: { ap: 0.3084, auroc: 0.6550, fpr95: 1.0, ece: 0.1335 },
-  msp: { ap: 0.4744, auroc: 0.8705, fpr95: 0.3504, ece: 0.0990 },
-  images: [
-    ['0000', 8.32, 0.6094], ['0001', 7.24, 0.2417], ['0002', 7.94, 0.3395], ['0003', 17.99, 0.4371],
-    ['0004', 36.76, 0.4449], ['0005', 10.82, 0.0976], ['0006', 6.78, 0.8133], ['0007', 22.19, 0.2686],
-    ['0008', 27.87, 0.5135], ['0009', 1.69, 0.7291],
-  ],
-}
-
-function GeneralisationPanel() {
-  const rows = [
-    { label: 'AP', key: 'ap', higherBetter: true },
-    { label: 'AUROC', key: 'auroc', higherBetter: true },
-    { label: 'FPR@95', key: 'fpr95', higherBetter: false },
-    { label: 'ECE', key: 'ece', higherBetter: false },
-  ]
-  const byArea = [...RA21.images].sort((a, b) => a[1] - b[1])
-  return (
-    <section className="calib-block">
-      <div className="stage-head">
-        <h2>Second dataset — where it does not generalise</h2>
-        <p>
-          RoadAnomaly21 (SegmentMeIfYouCan): web photos where the anomaly is large and close, 14.8% of pixels
-          vs 0.28% in Lost&amp;Found. Only its 10 validation images have public labels, so this is a sanity
-          check, not a benchmark. Nothing was tuned on them.
-        </p>
-      </div>
-      <div className="calib-body">
-        <table className="calib-table">
-          <thead>
-            <tr><th>Metric</th><th>TwinGuard (3 heads)</th><th>MSP baseline</th><th>Δ</th></tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => {
-              const a = RA21.twinguard[r.key]
-              const b = RA21.msp[r.key]
-              const d = a - b
-              const worse = r.higherBetter ? d < 0 : d > 0
-              return (
-                <tr key={r.key}>
-                  <td className="mono">{r.label}</td>
-                  <td className="mono">{a.toFixed(4)}</td>
-                  <td className="mono">{b.toFixed(4)}</td>
-                  <td className={`mono delta ${worse ? 'delta-bad' : 'delta-good'}`}>{`${d >= 0 ? '+' : ''}${d.toFixed(4)}`}</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-
-        <div className="ra-bars">
-          <div className="ra-bars-head mono">TWINGUARD AP PER IMAGE · SORTED BY ANOMALY SIZE</div>
-          {byArea.map(([id, area, ap]) => (
-            <div className="ra-row" key={id} title={`validation${id}: anomaly ${area}% of pixels, AP ${ap}`}>
-              <span className="mono ra-id">#{id}</span>
-              <span className="mono ra-area">{area.toFixed(1)}%</span>
-              <div className="ra-track"><div className="ra-fill" style={{ width: `${(100 * ap).toFixed(0)}%` }} /></div>
-              <span className="mono ra-val">{ap.toFixed(2)}</span>
-            </div>
-          ))}
-        </div>
-
-        <p className="calib-note">
-          TwinGuard falls below plain MSP here. Its heads were trained on small pasted objects, and
-          large close anomalies are a different problem. The project lead's separately trained COCO-only
-          model shows the same pattern (AUROC 0.72 vs MSP 0.87), so we report this as a
-          generalisation limitation. Source: eval_road_anomaly21.log.
-        </p>
-      </div>
-    </section>
-  )
+  return frame
 }
 
 export default function HomePage() {
+  const frame = useHeroFrame()
   return (
     <div className="content home">
-      <section className="hero-block">
-        <div className="hero-row-flex">
-          <div className="hero-copy">
-            <div className="stamp">EXPERIMENT B · SEGFORMER-B5 · 3 OOD HEADS</div>
-            <h1 className="hero-title">
-              Catch what the model<br />was <span className="accent-text">never trained</span> to see.
-            </h1>
-            <p className="hero-sub">
-              TwinGuard flags road-scene pixels a segmentation model has never encountered —
-              debris, animals, unfamiliar cargo — with a confidence score built to be trustworthy,
-              not just high. Trained on Cityscapes, stress-tested on Fishyscapes Lost&amp;Found.
-            </p>
-            <div className="hero-cta">
-              <Link to="/demo" className="cta-btn cta-primary">View Live Demo →</Link>
-              <Link to="/runs" className="cta-btn cta-ghost">Training Runs</Link>
-            </div>
+      <section className="hero">
+        <div>
+          <div className="stamp">SegFormer-B5 · 3 OOD heads</div>
+          <h1 className="hero-title">
+            Catch what the model was <span className="grad-text">never trained</span> to see.
+          </h1>
+          <p className="hero-sub">
+            TwinGuard flags road-scene pixels a segmentation network has never encountered, such as
+            debris, animals or fallen cargo, and says how much to trust each flag.
+          </p>
+          <div className="hero-cta">
+            <Link to="/demo" className="cta-btn cta-primary">Open the demo →</Link>
+            <a href="#finding" className="cta-btn cta-ghost">Why it matters</a>
           </div>
-          <div className="hero-visual-wrap">
-            <div className="hero-visual-label mono">HEAD DISAGREEMENT · LIVE SIMULATION</div>
-            <PulseGrid />
-            <div className="hero-visual-caption">
-              Each pulse is a simulated pixel where the three OOD heads disagree —
-              the actual signal the demo's disagreement heatmap is built from.
+        </div>
+        <div>
+          <div className="frame-window">
+            <div className="frame-bar"><i /><i /><i /><span className="mono">real test frame · detection</span></div>
+            <div className="frame-img">
+              {frame
+                ? <img src={frame.panels.detection} alt="Detection on a Fishyscapes test frame" />
+                : <div className="skeleton" style={{ width: '100%', height: '100%', borderRadius: 0 }} />}
             </div>
+            {frame && (
+              <>
+                <div className="frame-chip chip-a">
+                  <div className="k">Score on the object</div>
+                  <div className="v mono accent-text">{frame.score_inside.toFixed(3)}</div>
+                </div>
+                <div className="frame-chip chip-b">
+                  <div className="k">Score on background</div>
+                  <div className="v mono">{frame.score_outside.toFixed(3)}</div>
+                </div>
+              </>
+            )}
           </div>
+          <p className="frame-note">A real output, not a mock-up. Needs the backend running; open the demo to explore more.</p>
         </div>
       </section>
 
-      <section className="proof-row home-proof">
-        {METRICS.map((m) => (
-          <CountUpStat key={m.k} k={m.k} v={m.v} decimals={m.decimals} />
-        ))}
+      <section className="metrics">
+        {METRICS.map((m) => <CountUpMetric key={m.k} {...m} />)}
       </section>
       <p className="metric-note">
-        Measured on the Fishyscapes Lost&amp;Found test half, held out from checkpoint
-        selection. Gate numbers are the pre- and post-calibration bars this project reports
-        against — see the Training Runs page for the full history.
+        Fishyscapes Lost&amp;Found test half, held out from checkpoint selection. Large, close
+        anomalies are a known weak spot (RoadAnomaly21); the project report has the full results.
       </p>
 
-      <CalibrationPanel />
-
-      <GeneralisationPanel />
-
-      <section className="feature-block">
-        <div className="stage-head">
-          <h2>How it actually works</h2>
-          <p>Three ideas, in the order they run at inference time.</p>
-        </div>
-        <div className="feature-grid">
-          {FEATURES.map((f) => (
-            <div className="feature-card" key={f.n}>
-              <div className="feature-n mono">{f.n}</div>
-              <div className="feature-t">{f.t}</div>
-              <div className="feature-d">{f.d}</div>
+      <section className="section" id="finding">
+        <Reveal><div className="section-eyebrow">The finding</div></Reveal>
+        <Reveal delay={60}><h2 className="section-title">A score can look perfectly calibrated and still be wrong where it matters.</h2></Reveal>
+        <Reveal delay={120}>
+          <p className="section-lede">
+            Calibration means a score of 0.8 should be right about 80% of the time. Averaged over the
+            whole image it looks flawless, because almost every pixel is easy background. At the outline
+            of an object, which decides how big the obstacle looks to a planner, it is not.
+          </p>
+        </Reveal>
+        <Reveal delay={160} className="gap-compare">
+          <div className="gap-row">
+            <div className="gap-top">
+              <span className="gap-label">Calibration error, whole image</span>
+              <span className="gap-val mono" style={{ color: 'var(--good)' }}>{ECE_WHOLE.toFixed(4)}</span>
             </div>
+            <div className="gap-track"><div className="gap-fill ok" style={{ '--w': `${(100 * ECE_WHOLE / ECE_SCALE_MAX).toFixed(2)}%` }} /></div>
+          </div>
+          <div className="gap-row">
+            <div className="gap-top">
+              <span className="gap-label">Calibration error, within 8 px of object outlines</span>
+              <span className="gap-val mono" style={{ color: 'var(--bad)' }}>{ECE_EDGE.toFixed(4)}</span>
+            </div>
+            <div className="gap-track"><div className="gap-fill warn" style={{ '--w': `${(100 * ECE_EDGE / ECE_SCALE_MAX).toFixed(2)}%` }} /></div>
+          </div>
+        </Reveal>
+        <Reveal delay={200}>
+          <p className="gap-foot">
+            The edge error is over <b>500 times</b> the whole-image figure, and no single temperature fixes
+            both. The calibration analysis, the methods compared and the baseline results are in the project report.
+          </p>
+        </Reveal>
+      </section>
+
+      <section className="section">
+        <Reveal><div className="section-eyebrow">How it works</div></Reveal>
+        <Reveal delay={60}><h2 className="section-title">Three ideas, in the order they run.</h2></Reveal>
+        <div className="steps">
+          {STEPS.map((s, i) => (
+            <Reveal className="step" key={s.n} delay={i * 110}>
+              <div className="step-n mono">{s.n}</div>
+              <div className="step-t">{s.t}</div>
+              <div className="step-d">{s.d}</div>
+            </Reveal>
           ))}
         </div>
       </section>
+
+      <Reveal className="cta-band">
+        <h2>See it on a road image of your own.</h2>
+        <p>Upload an image or a short video and watch the detection, the anomaly score and the head disagreement.</p>
+        <Link to="/demo" className="cta-btn cta-primary">Try the demo →</Link>
+      </Reveal>
     </div>
   )
 }

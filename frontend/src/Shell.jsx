@@ -1,39 +1,51 @@
+import { useEffect, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
+import ErrorBoundary from './components/ErrorBoundary'
+
+const LINKS = [
+  { to: '/', label: 'Home', end: true },
+  { to: '/demo', label: 'Demo' },
+]
 
 export default function Shell() {
   const location = useLocation()
+  const [scrolled, setScrolled] = useState(false)
+
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 12)
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
+
+  useEffect(() => { window.scrollTo(0, 0) }, [location.pathname])
 
   return (
     <div className="page">
-      <div className="navbar">
+      <div className={`navbar${scrolled ? ' scrolled' : ''}`}>
         <Link to="/" className="brand">
-          <span className="brand-mark">▣</span>
-          <span className="brand-name">TWINGUARD</span>
+          <span className="brand-mark" />
+          <span className="brand-name">TwinGuard</span>
         </Link>
         <nav className="navlinks">
-          <NavLink to="/" end className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
-            Home
-          </NavLink>
-          <NavLink to="/demo" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
-            Detection Demo
-          </NavLink>
-          <NavLink to="/explainability" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
-            Explainability
-          </NavLink>
-          <NavLink to="/runs" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
-            Training Runs
-          </NavLink>
-          <NavLink to="/training" className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}>
-            Training Data
-          </NavLink>
+          {LINKS.map(l => (
+            <NavLink
+              key={l.to}
+              to={l.to}
+              end={l.end}
+              className={({ isActive }) => `navlink${isActive ? ' active' : ''}`}
+            >
+              {l.label}
+            </NavLink>
+          ))}
         </nav>
       </div>
       <div key={location.pathname} className="route-fade">
-        <Outlet />
+        <ErrorBoundary><Outlet /></ErrorBoundary>
       </div>
       <footer className="site-footer">
-        <span>TwinGuard — OOD detection prototype</span>
-        <span>Fishyscapes Lost&amp;Found · mit-b5 frozen encoder · 3 independently-seeded heads</span>
+        <span>TwinGuard — road anomaly detection prototype</span>
+        <span>SegFormer-B5 frozen encoder · 3 independently seeded heads · Fishyscapes Lost&amp;Found</span>
       </footer>
     </div>
   )
